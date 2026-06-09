@@ -63,6 +63,17 @@ First run:
 - **Whisper context is cached** between dictations (model load + Metal init is the expensive part), so only the first dictation after launch pays the load cost.
 - Formatting failures (Ollama down, rate limit) **fall back to the raw transcript** — dictation never blocks on the formatter.
 
+## Prompt regression testing
+
+`scripts/` contains benchmarks that extract the formatting `SYSTEM_PROMPT` straight from `format.rs` (no drift) and run it against Ollama:
+
+```bash
+node scripts/bench_format.mjs gemma3:4b   # canonical cases: lists, corrections, fillers
+node scripts/e2e.mjs                      # real whisper transcripts, both models
+```
+
+Run them after any prompt change — they caught a few-shot contamination bug that a plain read-through would have missed.
+
 ## Known limitations
 
 - The Groq API key is stored in plaintext at `~/Library/Application Support/flow/settings.json` (Keychain support is on the roadmap). Local mode needs no key at all.

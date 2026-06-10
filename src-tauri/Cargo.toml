@@ -31,6 +31,10 @@ tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 dirs = "6"
 hound = "3.5"
+rusqlite = { version = "0.40", features = ["bundled"] }
+chrono = "0.4"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
 
 [profile.release]
 lto = true

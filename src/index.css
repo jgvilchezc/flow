@@ -1,3 +1,29 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ */
+/* Management UI theme tokens (warm minimal — Wispr Flow aesthetic)     */
+/* Light-only this change. Exposed to Tailwind as utilities:            */
+/*   bg-bg, bg-surface, border-border, text-text, text-muted,          */
+/*   bg-accent / text-accent, bg-accent-soft, rounded-* via --radius,  */
+/*   font-sans.                                                          */
+/* The legacy dark :root variables below power the overlay pill and the */
+/* existing Settings form, which keep their hand-written CSS untouched. */
+/* ------------------------------------------------------------------ */
+@theme {
+  --color-bg: #f7f5f2;
+  --color-surface: #ffffff;
+  --color-border: #e8e3db;
+  --color-text: #1f1d1b;
+  --color-muted: #8a8279;
+  --color-accent: #e8643c;
+  --color-accent-soft: #fbe9e2;
+
+  --radius: 0.75rem;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
 :root {
   --bg: #0f1115;
   --surface: #181b22;

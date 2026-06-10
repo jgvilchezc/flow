@@ -91,6 +91,43 @@ fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_history_at  ON history(at DESC);
         CREATE INDEX IF NOT EXISTS idx_history_app ON history(app);
+
+        CREATE TABLE IF NOT EXISTS dictionary (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind        TEXT NOT NULL CHECK(kind IN ('term','replacement')),
+            phrase      TEXT NOT NULL,
+            replacement TEXT,
+            created_at  INTEGER NOT NULL,
+            UNIQUE(kind, phrase)
+        );
+
+        CREATE TABLE IF NOT EXISTS snippets (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            trigger    TEXT NOT NULL UNIQUE,
+            expansion  TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS style_config (
+            context    TEXT PRIMARY KEY
+                       CHECK(context IN ('personal','work','email','other')),
+            tone       TEXT NOT NULL
+                       CHECK(tone IN ('formal','casual','very_casual')),
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+
+        INSERT OR IGNORE INTO style_config (context, tone, updated_at) VALUES
+            ('personal', 'casual', 0),
+            ('work',     'casual', 0),
+            ('email',    'casual', 0),
+            ('other',    'casual', 0);
+
+        INSERT OR IGNORE INTO app_meta (key, value) VALUES ('active_context', 'personal');
         "#,
     )
 }
@@ -180,6 +217,199 @@ pub fn get_history(
             rows
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// dictionary
+// ---------------------------------------------------------------------------
+
+/// A dictionary entry. `kind` is `"term"` (a proper noun / vocabulary bias for
+/// the STT prompt, `replacement` is `None`) or `"replacement"` (a literal
+/// substitution where `replacement` is the target text).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DictEntry {
+    pub id: Option<i64>,
+    pub kind: String,
+    pub phrase: String,
+    pub replacement: Option<String>,
+    pub created_at: i64,
+}
+
+/// Lists dictionary entries newest-first.
+pub fn list_dictionary(conn: &Connection) -> rusqlite::Result<Vec<DictEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, phrase, replacement, created_at
+         FROM dictionary ORDER BY created_at DESC, id DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DictEntry {
+                id: Some(row.get(0)?),
+                kind: row.get(1)?,
+                phrase: row.get(2)?,
+                replacement: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?
+        .collect();
+    rows
+}
+
+/// Inserts a dictionary entry, returning its rowid. The `UNIQUE(kind, phrase)`
+/// constraint surfaces duplicates as a SQLite error.
+pub fn add_dictionary(
+    conn: &Connection,
+    kind: &str,
+    phrase: &str,
+    replacement: Option<&str>,
+    created_at: i64,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO dictionary (kind, phrase, replacement, created_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![kind, phrase, replacement, created_at],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Deletes a dictionary entry by id. Returns the number of rows removed.
+pub fn delete_dictionary(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM dictionary WHERE id = ?1", rusqlite::params![id])
+}
+
+// ---------------------------------------------------------------------------
+// snippets
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Snippet {
+    pub id: Option<i64>,
+    pub trigger: String,
+    pub expansion: String,
+    pub created_at: i64,
+}
+
+/// Lists snippets newest-first.
+pub fn list_snippets(conn: &Connection) -> rusqlite::Result<Vec<Snippet>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, trigger, expansion, created_at
+         FROM snippets ORDER BY created_at DESC, id DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Snippet {
+                id: Some(row.get(0)?),
+                trigger: row.get(1)?,
+                expansion: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?
+        .collect();
+    rows
+}
+
+/// Inserts a snippet or updates the expansion of an existing one keyed by its
+/// unique `trigger`.
+pub fn upsert_snippet(
+    conn: &Connection,
+    trigger: &str,
+    expansion: &str,
+    created_at: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO snippets (trigger, expansion, created_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(trigger) DO UPDATE SET expansion = excluded.expansion",
+        rusqlite::params![trigger, expansion, created_at],
+    )?;
+    Ok(())
+}
+
+/// Deletes a snippet by id. Returns the number of rows removed.
+pub fn delete_snippet(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM snippets WHERE id = ?1", rusqlite::params![id])
+}
+
+// ---------------------------------------------------------------------------
+// style_config + active context
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StyleContext {
+    pub context: String,
+    pub tone: String,
+    pub updated_at: i64,
+}
+
+/// The four style contexts plus the currently active context key.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StyleConfig {
+    pub contexts: Vec<StyleContext>,
+    pub active_context: String,
+}
+
+/// Returns the four seeded style rows (ordered by the canonical context order)
+/// together with the active context from `app_meta`.
+pub fn get_style_config(conn: &Connection) -> rusqlite::Result<StyleConfig> {
+    let mut stmt = conn.prepare(
+        "SELECT context, tone, updated_at FROM style_config
+         ORDER BY CASE context
+            WHEN 'personal' THEN 0
+            WHEN 'work'     THEN 1
+            WHEN 'email'    THEN 2
+            WHEN 'other'    THEN 3
+            ELSE 4 END",
+    )?;
+    let contexts: Vec<StyleContext> = stmt
+        .query_map([], |row| {
+            Ok(StyleContext {
+                context: row.get(0)?,
+                tone: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+
+    let active_context = active_context(conn)?;
+    Ok(StyleConfig {
+        contexts,
+        active_context,
+    })
+}
+
+/// Sets the tone for a context. The CHECK constraints reject invalid
+/// context/tone values at the SQLite layer.
+pub fn set_style(
+    conn: &Connection,
+    context: &str,
+    tone: &str,
+    updated_at: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE style_config SET tone = ?2, updated_at = ?3 WHERE context = ?1",
+        rusqlite::params![context, tone, updated_at],
+    )?;
+    Ok(())
+}
+
+/// Reads the active context key from `app_meta`, defaulting to `personal`.
+pub fn active_context(conn: &Connection) -> rusqlite::Result<String> {
+    conn.query_row(
+        "SELECT value FROM app_meta WHERE key = 'active_context'",
+        [],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .map(|v| v.unwrap_or_else(|| "personal".to_string()))
+}
+
+/// Sets the active context key in `app_meta`.
+pub fn set_active_context(conn: &Connection, context: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO app_meta (key, value) VALUES ('active_context', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![context],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -327,5 +557,73 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dictionary_crud_unique_kind_phrase() {
+        let conn = open_in_memory().unwrap();
+        add_dictionary(&conn, "term", "Tauri", None, 1).unwrap();
+        let id = add_dictionary(&conn, "replacement", "addr", Some("address"), 2).unwrap();
+
+        // Same kind+phrase is rejected.
+        let dup = add_dictionary(&conn, "term", "Tauri", None, 3);
+        assert!(dup.is_err(), "duplicate (kind, phrase) must be rejected");
+
+        // Same phrase under a different kind is allowed.
+        add_dictionary(&conn, "replacement", "Tauri", Some("Tauri 2"), 4).unwrap();
+
+        let rows = list_dictionary(&conn).unwrap();
+        assert_eq!(rows.len(), 3);
+
+        assert_eq!(delete_dictionary(&conn, id).unwrap(), 1);
+        assert_eq!(list_dictionary(&conn).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn snippets_upsert_unique_trigger() {
+        let conn = open_in_memory().unwrap();
+        upsert_snippet(&conn, "addr", "123 Main St", 1).unwrap();
+        upsert_snippet(&conn, "sig", "Best, Jose", 2).unwrap();
+
+        // Upserting the same trigger updates rather than duplicating.
+        upsert_snippet(&conn, "addr", "456 Oak Ave", 3).unwrap();
+
+        let rows = list_snippets(&conn).unwrap();
+        assert_eq!(rows.len(), 2, "upsert must not create a duplicate trigger");
+        let addr = rows.iter().find(|s| s.trigger == "addr").unwrap();
+        assert_eq!(addr.expansion, "456 Oak Ave");
+
+        let id = addr.id.unwrap();
+        assert_eq!(delete_snippet(&conn, id).unwrap(), 1);
+        assert_eq!(list_snippets(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn style_four_context_rows_persist() {
+        let conn = open_in_memory().unwrap();
+        let cfg = get_style_config(&conn).unwrap();
+        let contexts: Vec<&str> = cfg.contexts.iter().map(|c| c.context.as_str()).collect();
+        assert_eq!(contexts, vec!["personal", "work", "email", "other"]);
+        assert!(cfg.contexts.iter().all(|c| c.tone == "casual"));
+        assert_eq!(cfg.active_context, "personal");
+
+        set_style(&conn, "work", "formal", 99).unwrap();
+        let cfg = get_style_config(&conn).unwrap();
+        let work = cfg.contexts.iter().find(|c| c.context == "work").unwrap();
+        assert_eq!(work.tone, "formal");
+        assert_eq!(work.updated_at, 99);
+        // Re-seeding on reopen must not clobber the edited tone (INSERT OR IGNORE).
+        assert_eq!(cfg.contexts.len(), 4);
+    }
+
+    #[test]
+    fn style_active_context_toggle() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(active_context(&conn).unwrap(), "personal");
+        set_active_context(&conn, "work").unwrap();
+        assert_eq!(active_context(&conn).unwrap(), "work");
+        assert_eq!(get_style_config(&conn).unwrap().active_context, "work");
+        set_active_context(&conn, "email").unwrap();
+        assert_eq!(active_context(&conn).unwrap(), "email");
     }
 }

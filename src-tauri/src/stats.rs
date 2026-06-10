@@ -5,9 +5,6 @@
 //! pure, fully-testable functions so they have no wall-clock dependency — the
 //! caller injects "today".
 
-// Surfaced through the Tauri command layer in a later management-ui batch.
-#![allow(dead_code)]
-
 use chrono::{Duration, NaiveDate};
 use rusqlite::Connection;
 use std::collections::HashMap;

@@ -22,7 +22,6 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 const MIN_RECORDING_SECS: f32 = 0.3;
 /// whisper.cpp rejects audio shorter than ~1s; short clips are padded.
 const MIN_WHISPER_SAMPLES: usize = (audio::WHISPER_SAMPLE_RATE as usize * 12) / 10;
-const MAX_HISTORY: usize = 50;
 
 #[derive(Clone, Serialize)]
 struct OverlayState {
@@ -30,25 +29,107 @@ struct OverlayState {
     message: String,
 }
 
-#[derive(Clone, Serialize)]
-struct HistoryEntry {
-    /// Unix ms — also the stable identity for UI lists.
-    at: u128,
-    raw: String,
-    formatted: String,
-    duration_ms: u128,
-    engine: String,
+/// The slice of durable configuration the dictation pipeline needs on every
+/// run, snapshotted from the database. Held behind a mutex in [`AppState`] and
+/// rebuilt via [`rebuild_pipeline_cfg`] whenever a mutating command changes the
+/// underlying tables, so `stop_and_process` never touches SQLite on the hot
+/// path.
+#[derive(Clone, Default)]
+struct PipelineConfig {
+    /// Dictionary `term` phrases in recency order (newest first) — fed to the
+    /// STT initial prompt and the formatter's proper-noun preservation line.
+    dict_terms: Vec<String>,
+    /// `(from, to)` literal replacement rules for the post-processing pass.
+    replacements: Vec<(String, String)>,
+    /// `(trigger, expansion)` snippet rules for the post-processing pass.
+    snippets: Vec<(String, String)>,
+    /// `(active_context, tone)` driving the formatter's style fragment.
+    style: (String, String),
+}
+
+/// Rebuilds the [`PipelineConfig`] snapshot from the database. Called at
+/// startup and after every mutating command so the in-memory snapshot stays in
+/// sync with persisted dictionary / snippet / style edits.
+fn rebuild_pipeline_cfg(conn: &rusqlite::Connection) -> rusqlite::Result<PipelineConfig> {
+    let dictionary = db::list_dictionary(conn)?;
+    // Terms bias STT/formatter; replacements are literal substitutions. The
+    // dictionary lists newest-first, which is exactly the recency order the STT
+    // prompt builder expects.
+    let mut dict_terms = Vec::new();
+    let mut replacements = Vec::new();
+    for entry in dictionary {
+        match entry.kind.as_str() {
+            "term" => dict_terms.push(entry.phrase),
+            "replacement" => {
+                if let Some(to) = entry.replacement {
+                    replacements.push((entry.phrase, to));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let snippets = db::list_snippets(conn)?
+        .into_iter()
+        .map(|s| (s.trigger, s.expansion))
+        .collect();
+
+    let style_cfg = db::get_style_config(conn)?;
+    let active = style_cfg.active_context;
+    let tone = style_cfg
+        .contexts
+        .iter()
+        .find(|c| c.context == active)
+        .map(|c| c.tone.clone())
+        .unwrap_or_else(|| "casual".to_string());
+
+    Ok(PipelineConfig {
+        dict_terms,
+        replacements,
+        snippets,
+        style: (active, tone),
+    })
 }
 
 struct AppState {
     settings: Mutex<Settings>,
     recorder: Mutex<audio::Recorder>,
     whisper: Arc<stt::WhisperCache>,
-    history: Mutex<Vec<HistoryEntry>>,
+    /// SQLite connection backing history, dictionary, snippets, and style. On a
+    /// failed open it falls back to an in-memory database so dictation keeps
+    /// working (history simply won't survive a restart).
+    db: Mutex<rusqlite::Connection>,
+    /// Snapshot of the durable pipeline config; rebuilt from `db` on every
+    /// mutating command via [`rebuild_pipeline_cfg`].
+    pipeline_cfg: Mutex<PipelineConfig>,
     processing: Mutex<bool>,
     /// Frontmost app captured at hotkey-press time, consumed once when the
     /// transcript is recorded into history. `None` when capture failed.
     pending_app: Mutex<Option<String>>,
+}
+
+/// Opens the durable database at `config_dir()/flow.db`. On any failure
+/// (missing directory, permissions, corruption) it logs and falls back to an
+/// in-memory database so the app keeps running — dictation never depends on a
+/// healthy disk, only persistence does.
+fn open_database() -> rusqlite::Connection {
+    let path = settings::config_dir().join("flow.db");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match db::open(&path) {
+        Ok(conn) => conn,
+        Err(err) => {
+            log::error!(
+                "failed to open database at {}: {err:#} — using in-memory fallback",
+                path.display()
+            );
+            let conn = rusqlite::Connection::open_in_memory()
+                .expect("in-memory SQLite must always open");
+            db::migrate(&conn).expect("in-memory migration must succeed");
+            conn
+        }
+    }
 }
 
 fn emit_state(app: &AppHandle, state: &'static str, message: impl Into<String>) {
@@ -190,22 +271,33 @@ fn stop_and_process(app: &AppHandle) {
                 }
                 hide_overlay(&app);
 
-                let entry = HistoryEntry {
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or_default(),
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or_default();
+                let pending_app = state.pending_app.lock().unwrap().take();
+                let row = db::HistoryRow {
+                    id: None,
+                    at: now_ms,
                     raw,
                     formatted,
-                    duration_ms: started.elapsed().as_millis(),
+                    word_count: 0,
+                    duration_ms: started.elapsed().as_millis() as i64,
+                    recording_ms: 0,
                     engine: format!("{:?}", settings.stt_engine),
+                    app: pending_app,
                 };
-                {
-                    let mut history = state.history.lock().unwrap();
-                    history.insert(0, entry.clone());
-                    history.truncate(MAX_HISTORY);
-                }
-                let _ = app.emit("flow://history", entry);
+                let row = {
+                    let conn = state.db.lock().unwrap();
+                    match db::insert_history(&conn, &row) {
+                        Ok(id) => db::HistoryRow { id: Some(id), ..row },
+                        Err(err) => {
+                            log::error!("failed to persist history: {err:#}");
+                            row
+                        }
+                    }
+                };
+                let _ = app.emit("flow://history", row);
             }
             Err(err) => {
                 log::error!("transcription failed: {err:#}");
@@ -285,8 +377,9 @@ async fn download_model(app: AppHandle, key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_history(state: tauri::State<AppState>) -> Vec<HistoryEntry> {
-    state.history.lock().unwrap().clone()
+fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::HistoryRow>, String> {
+    let conn = state.db.lock().unwrap();
+    db::get_history(&conn, 100, None).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -318,13 +411,21 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(AppState {
-            settings: Mutex::new(settings::load()),
-            recorder: Mutex::new(audio::Recorder::new()),
-            whisper: Arc::new(stt::WhisperCache::new()),
-            history: Mutex::new(Vec::new()),
-            processing: Mutex::new(false),
-            pending_app: Mutex::new(None),
+        .manage({
+            // Open the durable database, falling back to an in-memory one so a
+            // disk/permission failure degrades to a working-but-ephemeral app
+            // rather than blocking dictation entirely.
+            let conn = open_database();
+            let pipeline_cfg = rebuild_pipeline_cfg(&conn).unwrap_or_default();
+            AppState {
+                settings: Mutex::new(settings::load()),
+                recorder: Mutex::new(audio::Recorder::new()),
+                whisper: Arc::new(stt::WhisperCache::new()),
+                db: Mutex::new(conn),
+                pipeline_cfg: Mutex::new(pipeline_cfg),
+                processing: Mutex::new(false),
+                pending_app: Mutex::new(None),
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,

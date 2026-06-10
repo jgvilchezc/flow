@@ -138,7 +138,7 @@ fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
 
 /// One dictation entry. `id` is `None` before insertion and populated with the
 /// AUTOINCREMENT rowid afterwards by [`insert_history`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryRow {
     pub id: Option<i64>,
     /// Unix epoch milliseconds.

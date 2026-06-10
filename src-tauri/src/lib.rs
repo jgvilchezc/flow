@@ -3,6 +3,7 @@ mod db;
 mod format;
 mod inject;
 mod models;
+mod postprocess;
 mod settings;
 mod stt;
 

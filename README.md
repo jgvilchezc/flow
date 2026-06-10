@@ -4,6 +4,18 @@ Free, local-first voice dictation for macOS — a Wispr Flow alternative that co
 
 Hold a hotkey anywhere, speak, release. Your words land in whatever input has focus, cleaned up and formatted: punctuation fixed, filler words removed, self-corrections applied, enumerations turned into lists with colons.
 
+## Install (release DMG)
+
+Download `Flow_x.x.x_aarch64.dmg` from [Releases](../../releases), open it, and drag **Flow.app** into Applications.
+
+> **"Flow.app is damaged and can't be opened"?** It isn't damaged. Flow isn't notarized with Apple yet, so when you download it through a browser macOS quarantines it and Gatekeeper blocks it on Apple Silicon. Clear the quarantine flag once and it opens normally:
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/Flow.app
+> ```
+>
+> Then launch Flow from Applications as usual. (Building from source — see [Setup](#setup) — avoids this entirely.)
+
 ## How it works
 
 ```

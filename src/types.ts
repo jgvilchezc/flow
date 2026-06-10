@@ -32,6 +32,12 @@ export interface HistoryEntry {
   formatted: string;
   duration_ms: number;
   engine: string;
+  // Added with the management UI. Optional so older payloads (and code that
+  // only reads the original fields) keep type-checking.
+  id?: number | null;
+  word_count?: number;
+  recording_ms?: number;
+  app?: string | null;
 }
 
 export interface OverlayState {

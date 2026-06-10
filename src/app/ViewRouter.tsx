@@ -1,6 +1,7 @@
 import { SettingsView } from "../views/SettingsView";
 import { HomeView } from "../views/HomeView";
 import { InsightsView } from "../views/InsightsView";
+import { DictionaryView } from "../views/DictionaryView";
 import { EmptyState } from "../components/ui/EmptyState";
 import { useView, type View } from "./ViewContext";
 
@@ -21,13 +22,9 @@ const SparkIcon = (
 );
 
 const PLACEHOLDERS: Record<
-  Exclude<View, "settings" | "home" | "insights">,
+  Exclude<View, "settings" | "home" | "insights" | "dictionary">,
   { title: string; hint: string }
 > = {
-  dictionary: {
-    title: "Dictionary",
-    hint: "Teach Flow your proper nouns and literal replacements. Coming in the next batch.",
-  },
   snippets: {
     title: "Snippets",
     hint: "Expand short triggers into full phrases as you speak. Coming in the next batch.",
@@ -51,6 +48,10 @@ export function ViewRouter() {
 
   if (view === "insights") {
     return <InsightsView />;
+  }
+
+  if (view === "dictionary") {
+    return <DictionaryView />;
   }
 
   const placeholder = PLACEHOLDERS[view];

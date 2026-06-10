@@ -120,6 +120,18 @@ fn start_recording(app: &AppHandle) {
     }
 }
 
+/// enigo resolves layout-dependent keycodes through the TIS/TSM APIs, which
+/// must run on the main thread — macOS 26 enforces this with
+/// dispatch_assert_queue and traps the process otherwise.
+async fn inject_on_main_thread(app: &AppHandle, text: String) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(inject::inject_text(&text));
+    })?;
+    rx.await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("paste task dropped")))
+}
+
 fn stop_and_process(app: &AppHandle) {
     let state = app.state::<AppState>();
     let samples = {
@@ -158,7 +170,7 @@ fn stop_and_process(app: &AppHandle) {
             }
             Ok(raw) => {
                 let formatted = format::format(&settings, &raw).await;
-                if let Err(err) = inject::inject_text(&formatted) {
+                if let Err(err) = inject_on_main_thread(&app, formatted.clone()).await {
                     log::error!("injection failed: {err:#}");
                     emit_state(&app, "error", format!("Paste failed: {err}"));
                 } else {

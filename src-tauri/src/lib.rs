@@ -1,6 +1,7 @@
 mod audio;
 mod db;
 mod format;
+mod frontmost;
 mod inject;
 mod models;
 mod postprocess;
@@ -45,6 +46,9 @@ struct AppState {
     whisper: Arc<stt::WhisperCache>,
     history: Mutex<Vec<HistoryEntry>>,
     processing: Mutex<bool>,
+    /// Frontmost app captured at hotkey-press time, consumed once when the
+    /// transcript is recorded into history. `None` when capture failed.
+    pending_app: Mutex<Option<String>>,
 }
 
 fn emit_state(app: &AppHandle, state: &'static str, message: impl Into<String>) {
@@ -106,6 +110,10 @@ fn start_recording(app: &AppHandle) {
         });
         return;
     }
+    // Capture the frontmost app BEFORE recording starts, while the user's
+    // target app still owns the menu bar. The hotkey handler runs on the main
+    // thread, satisfying AppKit's requirement. Failure is non-fatal.
+    *state.pending_app.lock().unwrap() = frontmost::frontmost_app_name();
     match recorder.start() {
         Ok(()) => {
             emit_state(app, "recording", "");
@@ -316,6 +324,7 @@ pub fn run() {
             whisper: Arc::new(stt::WhisperCache::new()),
             history: Mutex::new(Vec::new()),
             processing: Mutex::new(false),
+            pending_app: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,

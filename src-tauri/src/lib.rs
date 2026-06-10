@@ -667,13 +667,30 @@ pub fn run() {
                 log::error!("failed to register hotkey: {err:#}");
             }
 
-            // Show the main window on first run so the user downloads a model.
+            // First run: show the main window and fetch the configured model
+            // automatically — dictation must work without a manual download
+            // step. Progress streams over the existing download events, so
+            // Settings reflects it live; on failure the manual button in
+            // Settings remains the recovery path.
             let first_run = !models::REGISTRY.iter().any(|m| models::is_downloaded(m.key));
             if first_run {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
+                let handle = handle.clone();
+                let key = handle
+                    .state::<AppState>()
+                    .settings
+                    .lock()
+                    .unwrap()
+                    .whisper_model
+                    .clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(err) = models::download(handle, key).await {
+                        log::error!("auto-download of default model failed: {err:#}");
+                    }
+                });
             }
             Ok(())
         })

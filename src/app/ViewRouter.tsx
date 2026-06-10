@@ -1,5 +1,6 @@
 import { SettingsView } from "../views/SettingsView";
 import { HomeView } from "../views/HomeView";
+import { InsightsView } from "../views/InsightsView";
 import { EmptyState } from "../components/ui/EmptyState";
 import { useView, type View } from "./ViewContext";
 
@@ -20,13 +21,9 @@ const SparkIcon = (
 );
 
 const PLACEHOLDERS: Record<
-  Exclude<View, "settings" | "home">,
+  Exclude<View, "settings" | "home" | "insights">,
   { title: string; hint: string }
 > = {
-  insights: {
-    title: "Insights",
-    hint: "Words dictated, words-per-minute, streaks, and per-app usage. Coming in the next batch.",
-  },
   dictionary: {
     title: "Dictionary",
     hint: "Teach Flow your proper nouns and literal replacements. Coming in the next batch.",
@@ -50,6 +47,10 @@ export function ViewRouter() {
 
   if (view === "home") {
     return <HomeView />;
+  }
+
+  if (view === "insights") {
+    return <InsightsView />;
   }
 
   const placeholder = PLACEHOLDERS[view];

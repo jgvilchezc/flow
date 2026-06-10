@@ -49,9 +49,9 @@ impl WhisperCache {
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
         params.set_token_timestamps(false);
-        if language != "auto" {
-            params.set_language(Some(language));
-        }
+        // whisper.cpp defaults to English when no language is given; "auto"
+        // must be passed explicitly to trigger language detection.
+        params.set_language(Some(language));
         let threads = std::thread::available_parallelism()
             .map(|n| (n.get() as i32 - 2).max(2))
             .unwrap_or(4);

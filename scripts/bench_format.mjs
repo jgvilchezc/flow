@@ -1,15 +1,15 @@
 // Benchmarks Flow's formatting pass: same endpoint, body and params as
-// src-tauri/src/format.rs, with the SYSTEM_PROMPT extracted from the source.
+// src-tauri/src/format.rs, sharing the prompt files under src-tauri/prompts/.
 import { readFileSync } from "node:fs";
 
 const model = process.argv[2] ?? "qwen2.5:7b";
-const source = readFileSync(
-  new URL("../src-tauri/src/format.rs", import.meta.url),
+const SYSTEM_PROMPT = readFileSync(
+  new URL("../src-tauri/prompts/system_prompt.txt", import.meta.url),
   "utf8",
 );
-const match = source.match(/const SYSTEM_PROMPT: &str = r#"([\s\S]*?)"#;/);
-if (!match) throw new Error("SYSTEM_PROMPT not found in format.rs");
-const SYSTEM_PROMPT = match[1];
+const FEW_SHOT = JSON.parse(
+  readFileSync(new URL("../src-tauri/prompts/few_shot.json", import.meta.url), "utf8"),
+);
 
 const cases = [
   ["es-list", "necesito que compres tres cosas eh leche huevos y pan"],
@@ -27,6 +27,10 @@ const cases = [
     "es-long",
     "hola buenas tardes quería avisarte que la reunión del lunes se pasa para el miércoles a las tres de la tarde porque el cliente eh pidió más tiempo para revisar la propuesta así que mejor preparate eh los números actualizados el reporte de ventas y la presentación nueva",
   ],
+  // regressions: a small model must never answer the transcript or invent content
+  ["es-greeting", "hola"],
+  ["es-question", "qué de qué estás hablando"],
+  ["es-intent", "quiero hacer una aplicación de un agente conversacional agrícola"],
 ];
 
 console.log(`model: ${model}\n`);
@@ -41,6 +45,7 @@ for (const [name, transcript] of cases) {
       options: { temperature: 0.1 },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
+        ...FEW_SHOT,
         { role: "user", content: transcript },
       ],
     }),

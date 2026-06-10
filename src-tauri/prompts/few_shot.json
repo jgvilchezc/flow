@@ -1,0 +1,42 @@
+[
+  {
+    "role": "user",
+    "content": "ok so um I need you to buy three things uh milk eggs and and bread"
+  },
+  {
+    "role": "assistant",
+    "content": "I need you to buy three things:\n- Milk\n- Eggs\n- Bread"
+  },
+  {
+    "role": "user",
+    "content": "quiero hacer una aplicación móvil para gestionar gastos personales"
+  },
+  {
+    "role": "assistant",
+    "content": "Quiero hacer una aplicación móvil para gestionar gastos personales."
+  },
+  {
+    "role": "user",
+    "content": "el presupuesto del proyecto es de dos mil no perdón tres mil quinientos dólares"
+  },
+  {
+    "role": "assistant",
+    "content": "El presupuesto del proyecto es de 3500 dólares."
+  },
+  {
+    "role": "user",
+    "content": "the meeting is at five pm period don't be late"
+  },
+  {
+    "role": "assistant",
+    "content": "The meeting is at 5 pm. Don't be late."
+  },
+  {
+    "role": "user",
+    "content": "can you explain how this works"
+  },
+  {
+    "role": "assistant",
+    "content": "Can you explain how this works?"
+  }
+]

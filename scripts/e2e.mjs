@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
-const source = readFileSync(new URL("../src-tauri/src/format.rs", import.meta.url), "utf8");
-const SYSTEM_PROMPT = source.match(/const SYSTEM_PROMPT: &str = r#"([\s\S]*?)"#;/)[1];
+const SYSTEM_PROMPT = readFileSync(
+  new URL("../src-tauri/prompts/system_prompt.txt", import.meta.url),
+  "utf8",
+);
+const FEW_SHOT = JSON.parse(
+  readFileSync(new URL("../src-tauri/prompts/few_shot.json", import.meta.url), "utf8"),
+);
 // actual whisper-cli outputs from the benchmark clips
 const cases = [
   ["es_corr", "Llegamos el viernes, no para, o mejor el sábado a las 10."],
@@ -15,7 +20,11 @@ for (const model of ["gemma3:4b", "qwen2.5:7b"]) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model, stream: false, options: { temperature: 0.1 },
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content: transcript }] }),
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...FEW_SHOT,
+          { role: "user", content: transcript },
+        ] }),
     });
     const body = await res.json();
     const ms = Math.round(performance.now() - t0);

@@ -140,10 +140,24 @@ export function SettingsView() {
       {accessibility === false && (
         <div
           role="alert"
-          className="mb-4 rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] leading-relaxed text-amber-800"
+          className="mb-4 flex items-center justify-between gap-4 rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] leading-relaxed text-amber-800"
         >
-          Accessibility permission is missing. Enable Flow in System Settings →
-          Privacy &amp; Security → Accessibility, then restart the app.
+          <span>
+            Accessibility permission is missing — Flow needs it to paste
+            dictated text. If you already enabled it and rebuilt the app,
+            remove Flow from the System Settings list and add it again.
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded-md bg-amber-800 px-3 py-1.5 text-[12.5px] font-medium text-white"
+            onClick={() => {
+              invoke<boolean>("request_accessibility")
+                .then(setAccessibility)
+                .catch(console.error);
+            }}
+          >
+            Grant permission
+          </button>
         </div>
       )}
 

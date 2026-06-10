@@ -43,3 +43,10 @@ pub fn inject_text(text: &str) -> Result<()> {
 pub fn ensure_accessibility() -> bool {
     macos_accessibility_client::accessibility::application_is_trusted_with_prompt()
 }
+
+/// Passive permission check — never triggers the system prompt. UI status
+/// must use this; the prompting variant is reserved for explicit user action
+/// (the grant button, or the first dictation attempt).
+pub fn is_accessibility_granted() -> bool {
+    macos_accessibility_client::accessibility::application_is_trusted()
+}

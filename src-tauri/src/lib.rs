@@ -437,6 +437,14 @@ fn get_history(
 
 #[tauri::command]
 fn check_accessibility() -> bool {
+    // Passive: the Settings view polls this on mount, so it must never
+    // trigger the system prompt.
+    inject::is_accessibility_granted()
+}
+
+#[tauri::command]
+fn request_accessibility() -> bool {
+    // Explicit user action: shows the system prompt when not yet granted.
     inject::ensure_accessibility()
 }
 
@@ -616,6 +624,7 @@ pub fn run() {
             download_model,
             get_history,
             check_accessibility,
+            request_accessibility,
             test_format,
             get_stats,
             list_dictionary,

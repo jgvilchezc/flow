@@ -667,17 +667,20 @@ pub fn run() {
                 log::error!("failed to register hotkey: {err:#}");
             }
 
-            // First run: show the main window and fetch the configured model
-            // automatically — dictation must work without a manual download
-            // step. Progress streams over the existing download events, so
-            // Settings reflects it live; on failure the manual button in
-            // Settings remains the recovery path.
+            // A manual launch always surfaces the UI; the tray only takes
+            // over after the user closes the window.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+
+            // First run: fetch the configured model automatically —
+            // dictation must work without a manual download step. Progress
+            // streams over the existing download events, so Settings
+            // reflects it live; on failure the manual button in Settings
+            // remains the recovery path.
             let first_run = !models::REGISTRY.iter().any(|m| models::is_downloaded(m.key));
             if first_run {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
                 let handle = handle.clone();
                 let key = handle
                     .state::<AppState>()
@@ -703,8 +706,18 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Clicking the Dock icon while the app is already running fires
+            // Reopen — standard macOS behavior is to surface the window.
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
 
 #[cfg(test)]

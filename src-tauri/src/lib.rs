@@ -5,6 +5,7 @@ mod inject;
 mod models;
 mod postprocess;
 mod settings;
+mod stats;
 mod stt;
 
 use serde::Serialize;

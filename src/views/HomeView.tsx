@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getHistory, getStats, type Stats } from "../lib/api";
-import type { HistoryEntry } from "../types";
+import { hotkeyParts } from "../lib/hotkey";
+import type { HistoryEntry, Settings } from "../types";
 import { useView } from "../app/ViewContext";
 import { HistoryFeed } from "../components/HistoryFeed";
 import { StatRail } from "../components/StatRail";
@@ -40,11 +42,33 @@ const ZERO_STATS: Stats = {
  * App shell owns the single `flow://history` listener, so a new dictation
  * refreshes Home without it subscribing to events itself.
  */
+function HotkeyChip({ accelerator }: { accelerator: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 align-baseline">
+      {hotkeyParts(accelerator).map((part, i) => (
+        <kbd
+          key={i}
+          className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[12px] font-medium text-text shadow-[0_1px_0_var(--color-border)]"
+        >
+          {part}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
 export function HomeView() {
   const { dataVersion } = useView();
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [stats, setStats] = useState<Stats>(ZERO_STATS);
   const [loading, setLoading] = useState(true);
+  const [hotkey, setHotkey] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<Settings>("get_settings")
+      .then((s) => setHotkey(s.hotkey))
+      .catch(console.error);
+  }, [dataVersion]);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,8 +94,9 @@ export function HomeView() {
           Welcome back
         </h1>
         <p className="mt-1.5 text-[13.5px] leading-relaxed text-muted">
-          Hold your hotkey anywhere, speak, and release. Everything you dictate
-          lands here.
+          Hold {hotkey ? <HotkeyChip accelerator={hotkey} /> : "your hotkey"}{" "}
+          anywhere, speak, and release. Everything you dictate lands here — you
+          can change the key in Settings.
         </p>
       </header>
 
@@ -87,7 +112,7 @@ export function HomeView() {
         <EmptyState
           icon={MicIcon}
           title="Nothing dictated yet"
-          hint="Hold your hotkey and start talking — your dictations will show up here, grouped by day."
+          hint={`Hold ${hotkey ? hotkeyParts(hotkey).join(" ") : "your hotkey"} and start talking — your dictations will show up here, grouped by day.`}
         />
       ) : (
         <HistoryFeed entries={entries} />

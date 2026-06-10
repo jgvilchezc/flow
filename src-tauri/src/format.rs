@@ -11,8 +11,12 @@ use std::time::Duration;
 const SYSTEM_PROMPT: &str = include_str!("../prompts/system_prompt.txt");
 const FEW_SHOT_JSON: &str = include_str!("../prompts/few_shot.json");
 
-fn build_messages(transcript: &str) -> Vec<serde_json::Value> {
-    let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
+fn build_messages(transcript: &str, terms: &[String], fragment: Option<&str>) -> Vec<serde_json::Value> {
+    // Augment the base system prompt with the user's proper nouns and the active
+    // style fragment. With no terms and no fragment this is the identity of
+    // SYSTEM_PROMPT, so behavior is unchanged from before management-ui.
+    let system = crate::prompt::augment_system_prompt(SYSTEM_PROMPT, terms, fragment);
+    let mut messages = vec![json!({ "role": "system", "content": system })];
     let shots: Vec<serde_json::Value> =
         serde_json::from_str(FEW_SHOT_JSON).expect("invalid few_shot.json");
     messages.extend(shots);
@@ -27,14 +31,19 @@ fn http() -> reqwest::Client {
         .expect("failed to build http client")
 }
 
-async fn format_ollama(model: &str, transcript: &str) -> Result<String> {
+async fn format_ollama(
+    model: &str,
+    transcript: &str,
+    terms: &[String],
+    fragment: Option<&str>,
+) -> Result<String> {
     let body = json!({
         "model": model,
         "stream": false,
         // keep the model resident so dictation after idle doesn't pay a reload
         "keep_alive": "60m",
         "options": { "temperature": 0.1 },
-        "messages": build_messages(transcript)
+        "messages": build_messages(transcript, terms, fragment)
     });
     let response = http()
         .post("http://localhost:11434/api/chat")
@@ -52,14 +61,20 @@ async fn format_ollama(model: &str, transcript: &str) -> Result<String> {
     Ok(strip_reasoning(text).trim().to_string())
 }
 
-async fn format_groq(api_key: &str, model: &str, transcript: &str) -> Result<String> {
+async fn format_groq(
+    api_key: &str,
+    model: &str,
+    transcript: &str,
+    terms: &[String],
+    fragment: Option<&str>,
+) -> Result<String> {
     if api_key.is_empty() {
         return Err(anyhow!("Groq API key is not set"));
     }
     let body = json!({
         "model": model,
         "temperature": 0.1,
-        "messages": build_messages(transcript)
+        "messages": build_messages(transcript, terms, fragment)
     });
     let response = http()
         .post("https://api.groq.com/openai/v1/chat/completions")
@@ -116,15 +131,29 @@ fn keeps_speaker_words(transcript: &str, formatted: &str) -> bool {
 
 /// Formats the transcript, falling back to the raw text on any failure so a
 /// dead Ollama or an exhausted rate limit never blocks dictation.
-pub async fn format(settings: &Settings, transcript: &str) -> String {
+pub async fn format(
+    settings: &Settings,
+    transcript: &str,
+    terms: &[String],
+    fragment: Option<&str>,
+) -> String {
     if transcript.is_empty() {
         return String::new();
     }
     let result = match settings.formatter {
         Formatter::None => return transcript.to_string(),
-        Formatter::Ollama => format_ollama(&settings.ollama_model, transcript).await,
+        Formatter::Ollama => {
+            format_ollama(&settings.ollama_model, transcript, terms, fragment).await
+        }
         Formatter::Groq => {
-            format_groq(&settings.groq_api_key, &settings.groq_llm_model, transcript).await
+            format_groq(
+                &settings.groq_api_key,
+                &settings.groq_llm_model,
+                transcript,
+                terms,
+                fragment,
+            )
+            .await
         }
     };
     match result {

@@ -10,9 +10,6 @@
 //! * [`augment_system_prompt`] appends term-preservation and an optional style
 //!   fragment to a base system prompt without ever mutating the base.
 
-// Wired into the STT and formatter calls in a later management-ui batch.
-#![allow(dead_code)]
-
 /// Maximum length, in bytes, of the STT initial prompt. whisper truncates long
 /// prompts, so the most relevant (most recently added) terms are kept.
 const MAX_INITIAL_PROMPT: usize = 800;

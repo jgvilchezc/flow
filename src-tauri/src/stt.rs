@@ -16,7 +16,13 @@ impl WhisperCache {
         }
     }
 
-    fn transcribe(&self, model_key: &str, language: &str, samples: &[f32]) -> Result<String> {
+    fn transcribe(
+        &self,
+        model_key: &str,
+        language: &str,
+        bias: Option<&str>,
+        samples: &[f32],
+    ) -> Result<String> {
         let mut guard = self.inner.lock().unwrap();
         let needs_load = match guard.as_ref() {
             Some((key, _)) => key != model_key,
@@ -52,6 +58,11 @@ impl WhisperCache {
         // whisper.cpp defaults to English when no language is given; "auto"
         // must be passed explicitly to trigger language detection.
         params.set_language(Some(language));
+        // Bias decoding toward the user's vocabulary. Zero terms => no prompt =>
+        // identical behavior to an unbiased run.
+        if let Some(prompt) = bias {
+            params.set_initial_prompt(prompt);
+        }
         let threads = std::thread::available_parallelism()
             .map(|n| (n.get() as i32 - 2).max(2))
             .unwrap_or(4);
@@ -89,7 +100,12 @@ fn encode_wav(samples: &[f32]) -> Result<Vec<u8>> {
 }
 
 /// Groq's free tier currently allows 2,000 requests/day on whisper-large-v3-turbo.
-async fn transcribe_groq(api_key: &str, language: &str, samples: &[f32]) -> Result<String> {
+async fn transcribe_groq(
+    api_key: &str,
+    language: &str,
+    bias: Option<&str>,
+    samples: &[f32],
+) -> Result<String> {
     if api_key.is_empty() {
         return Err(anyhow!("Groq API key is not set — add it in Flow settings"));
     }
@@ -104,6 +120,11 @@ async fn transcribe_groq(api_key: &str, language: &str, samples: &[f32]) -> Resu
         .text("temperature", "0");
     if language != "auto" {
         form = form.text("language", language.to_string());
+    }
+    // Groq's transcription endpoint is OpenAI-compatible and accepts a `prompt`
+    // field to bias vocabulary. Omitted entirely when there are no terms.
+    if let Some(prompt) = bias {
+        form = form.text("prompt", prompt.to_string());
     }
 
     let response = reqwest::Client::new()
@@ -126,16 +147,17 @@ async fn transcribe_groq(api_key: &str, language: &str, samples: &[f32]) -> Resu
 pub async fn transcribe(
     cache: &WhisperCache,
     settings: &Settings,
+    bias: Option<&str>,
     samples: Vec<f32>,
 ) -> Result<String> {
     match settings.stt_engine {
         SttEngine::Groq => {
-            transcribe_groq(&settings.groq_api_key, &settings.language, &samples).await
+            transcribe_groq(&settings.groq_api_key, &settings.language, bias, &samples).await
         }
         SttEngine::Local => {
             // whisper inference is CPU/GPU-bound; keep it off the async executor
             tokio::task::block_in_place(|| {
-                cache.transcribe(&settings.whisper_model, &settings.language, &samples)
+                cache.transcribe(&settings.whisper_model, &settings.language, bias, &samples)
             })
         }
     }

@@ -225,6 +225,36 @@ async fn inject_on_main_thread(app: &AppHandle, text: String) -> anyhow::Result<
         .unwrap_or_else(|_| Err(anyhow::anyhow!("paste task dropped")))
 }
 
+/// Counts words in `text` using the same alphanumeric tokenizer as the rest of
+/// the pipeline (`format`, `postprocess`, `stats`), so word counts are
+/// consistent everywhere.
+fn word_count(text: &str) -> i64 {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .count() as i64
+}
+
+/// Resolves the formatter style fragment for the active `(context, tone)` pair.
+/// Unrecognized values (shouldn't happen — the DB CHECK constraints enforce the
+/// vocabulary) resolve to `None`, leaving the base prompt untouched.
+fn style_fragment_for(style: &(String, String)) -> Option<&'static str> {
+    let (context, tone) = style;
+    let context = match context.as_str() {
+        "personal" => prompt::Context::Personal,
+        "work" => prompt::Context::Work,
+        "email" => prompt::Context::Email,
+        "other" => prompt::Context::Other,
+        _ => return None,
+    };
+    let tone = match tone.as_str() {
+        "formal" => prompt::Tone::Formal,
+        "casual" => prompt::Tone::Casual,
+        "very_casual" => prompt::Tone::VeryCasual,
+        _ => return None,
+    };
+    Some(prompt::style_fragment(tone, context))
+}
+
 fn stop_and_process(app: &AppHandle) {
     let state = app.state::<AppState>();
     let samples = {
@@ -244,26 +274,45 @@ fn stop_and_process(app: &AppHandle) {
     *state.processing.lock().unwrap() = true;
     emit_state(app, "processing", "");
 
+    // Audio is 16 kHz mono; compute the recorded duration BEFORE padding so
+    // short-clip padding never inflates the WPM denominator.
+    let recording_ms = (samples.len() / (audio::WHISPER_SAMPLE_RATE as usize / 1000)) as i64;
+
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let started = Instant::now();
         let state = app.state::<AppState>();
         let settings = state.settings.lock().unwrap().clone();
         let whisper = Arc::clone(&state.whisper);
+        // Snapshot the durable pipeline config once for this dictation.
+        let cfg = state.pipeline_cfg.lock().unwrap().clone();
 
         let mut padded = samples;
         if padded.len() < MIN_WHISPER_SAMPLES {
             padded.resize(MIN_WHISPER_SAMPLES, 0.0);
         }
 
-        match stt::transcribe(&whisper, &settings, padded).await {
+        // STT bias from the user's vocabulary terms. Zero terms => None => an
+        // unbiased transcription identical to before management-ui.
+        let bias = prompt::stt_initial_prompt(&cfg.dict_terms);
+        match stt::transcribe(&whisper, &settings, bias.as_deref(), padded).await {
             Ok(raw) if raw.is_empty() => {
                 emit_state(&app, "idle", "");
                 hide_overlay(&app);
             }
             Ok(raw) => {
-                let formatted = format::format(&settings, &raw).await;
-                if let Err(err) = inject_on_main_thread(&app, formatted.clone()).await {
+                // Format with proper-noun preservation and the active style
+                // fragment. On any formatter failure `format` returns the raw
+                // transcript — expansion still applies to that raw text below.
+                let fragment = style_fragment_for(&cfg.style);
+                let formatted =
+                    format::format(&settings, &raw, &cfg.dict_terms, fragment).await;
+                // Deterministic replacements + snippet expansion run on the
+                // final text (LLM output or raw fallback alike).
+                let final_text =
+                    postprocess::apply(&formatted, &cfg.replacements, &cfg.snippets);
+
+                if let Err(err) = inject_on_main_thread(&app, final_text.clone()).await {
                     log::error!("injection failed: {err:#}");
                     emit_state(&app, "error", format!("Paste failed: {err}"));
                 } else {
@@ -280,10 +329,10 @@ fn stop_and_process(app: &AppHandle) {
                     id: None,
                     at: now_ms,
                     raw,
-                    formatted,
-                    word_count: 0,
+                    word_count: word_count(&final_text),
+                    formatted: final_text,
                     duration_ms: started.elapsed().as_millis() as i64,
-                    recording_ms: 0,
+                    recording_ms,
                     engine: format!("{:?}", settings.stt_engine),
                     app: pending_app,
                 };
@@ -390,7 +439,7 @@ fn check_accessibility() -> bool {
 #[tauri::command]
 async fn test_format(state: tauri::State<'_, AppState>, text: String) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
-    Ok(format::format(&settings, &text).await)
+    Ok(format::format(&settings, &text, &[], None).await)
 }
 
 // ---------------------------------------------------------------------------
@@ -496,4 +545,67 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_count_alphanumeric_tokens() {
+        assert_eq!(word_count(""), 0);
+        assert_eq!(word_count("   "), 0);
+        assert_eq!(word_count("hello world"), 2);
+        // Punctuation and symbols are separators, not words. The apostrophe in
+        // "don't" splits it into two tokens — same alphanumeric tokenizer the
+        // stats/postprocess layers use, kept consistent on purpose.
+        assert_eq!(word_count("Hello, world! Nice day."), 4);
+        assert_eq!(word_count("don't"), 2);
+        // Numbers count as alphanumeric word tokens.
+        assert_eq!(word_count("call 555 1234 now"), 4);
+    }
+
+    #[test]
+    fn style_fragment_resolves_known_pairs() {
+        let style = ("work".to_string(), "formal".to_string());
+        let fragment = style_fragment_for(&style).expect("known pair resolves");
+        assert_eq!(fragment, prompt::style_fragment(prompt::Tone::Formal, prompt::Context::Work));
+    }
+
+    #[test]
+    fn style_fragment_unknown_pair_is_none() {
+        assert!(style_fragment_for(&("bogus".into(), "casual".into())).is_none());
+        assert!(style_fragment_for(&("work".into(), "bogus".into())).is_none());
+    }
+
+    #[test]
+    fn rebuild_pipeline_cfg_partitions_terms_and_replacements() {
+        let conn = db::open_in_memory().unwrap();
+        // Terms (no replacement) bias STT; replacements become literal rules.
+        db::add_dictionary(&conn, "term", "Tauri", None, 1).unwrap();
+        db::add_dictionary(&conn, "term", "rusqlite", None, 2).unwrap();
+        db::add_dictionary(&conn, "replacement", "addr", Some("address"), 3).unwrap();
+        db::upsert_snippet(&conn, "sig", "Best, Jose", 4).unwrap();
+        db::set_style(&conn, "work", "formal", 5).unwrap();
+        db::set_active_context(&conn, "work").unwrap();
+
+        let cfg = rebuild_pipeline_cfg(&conn).unwrap();
+        assert!(cfg.dict_terms.contains(&"Tauri".to_string()));
+        assert!(cfg.dict_terms.contains(&"rusqlite".to_string()));
+        assert_eq!(cfg.dict_terms.len(), 2, "only term-kind rows bias STT");
+        assert_eq!(cfg.replacements, vec![("addr".to_string(), "address".to_string())]);
+        assert_eq!(cfg.snippets, vec![("sig".to_string(), "Best, Jose".to_string())]);
+        assert_eq!(cfg.style, ("work".to_string(), "formal".to_string()));
+    }
+
+    #[test]
+    fn rebuild_pipeline_cfg_defaults_on_empty_db() {
+        let conn = db::open_in_memory().unwrap();
+        let cfg = rebuild_pipeline_cfg(&conn).unwrap();
+        assert!(cfg.dict_terms.is_empty());
+        assert!(cfg.replacements.is_empty());
+        assert!(cfg.snippets.is_empty());
+        // Seeded defaults: personal context, casual tone.
+        assert_eq!(cfg.style, ("personal".to_string(), "casual".to_string()));
+    }
 }

@@ -19,9 +19,6 @@
 //! * Replacements run first (one pass), then snippets (a second pass).
 //! * Empty rule sets return the input unchanged.
 
-// Consumed by the formatting pipeline in a later management-ui batch.
-#![allow(dead_code)]
-
 /// Applies replacement rules, then snippet rules, to `text`.
 ///
 /// Each `(from, to)` pair matches `from` as a whole-word, case-insensitive,

@@ -1,4 +1,5 @@
 mod audio;
+mod db;
 mod format;
 mod inject;
 mod models;

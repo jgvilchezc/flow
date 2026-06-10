@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   DownloadProgress,
   ModelStatus,
@@ -311,9 +312,29 @@ export function SettingsView() {
                     onChange={(e) => update({ groq_api_key: e.target.value })}
                     placeholder="gsk_…"
                   />
-                  <p className="text-[12.5px] leading-relaxed text-muted">
-                    Free at console.groq.com — no card required.
-                  </p>
+                  {settings.groq_api_key.trim() === "" ? (
+                    <div
+                      role="alert"
+                      className="rounded-[var(--radius)] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[12.5px] leading-relaxed text-amber-800"
+                    >
+                      Groq is selected but no API key is set — dictation will
+                      fail until you paste one.{" "}
+                      <button
+                        type="button"
+                        className="font-medium underline underline-offset-2"
+                        onClick={() => {
+                          void openUrl("https://console.groq.com/keys");
+                        }}
+                      >
+                        Get a free key
+                      </button>{" "}
+                      (no card required), or switch back to Local.
+                    </div>
+                  ) : (
+                    <p className="text-[12.5px] leading-relaxed text-muted">
+                      Free at console.groq.com — no card required.
+                    </p>
+                  )}
                 </Field>
                 {settings.formatter === "groq" && (
                   <Field>

@@ -13,7 +13,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 
 /// Aggregated usage statistics for the insights view.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Stats {
     pub total_words: i64,
     pub avg_wpm: f64,

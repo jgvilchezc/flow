@@ -320,14 +320,10 @@ fn stop_and_process(app: &AppHandle) {
                 }
                 hide_overlay(&app);
 
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or_default();
                 let pending_app = state.pending_app.lock().unwrap().take();
                 let row = db::HistoryRow {
                     id: None,
-                    at: now_ms,
+                    at: now_ms(),
                     raw,
                     word_count: word_count(&final_text),
                     formatted: final_text,
@@ -426,9 +422,15 @@ async fn download_model(app: AppHandle, key: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_history(state: tauri::State<AppState>) -> Result<Vec<db::HistoryRow>, String> {
+fn get_history(
+    state: tauri::State<AppState>,
+    limit: Option<u32>,
+    before_at: Option<i64>,
+) -> Result<Vec<db::HistoryRow>, String> {
+    // Default to a 100-row page; keyset paging via `before_at` walks older rows.
+    let limit = limit.unwrap_or(100) as i64;
     let conn = state.db.lock().unwrap();
-    db::get_history(&conn, 100, None).map_err(|e| e.to_string())
+    db::get_history(&conn, limit, before_at).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -440,6 +442,135 @@ fn check_accessibility() -> bool {
 async fn test_format(state: tauri::State<'_, AppState>, text: String) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
     Ok(format::format(&settings, &text, &[], None).await)
+}
+
+/// Rebuilds the in-memory [`PipelineConfig`] from the database. Call after every
+/// mutation so the next dictation sees the change without re-reading SQLite on
+/// the hot path. Errors are logged but not surfaced — a stale snapshot is
+/// preferable to a failed command.
+fn refresh_pipeline_cfg(state: &AppState) {
+    let conn = state.db.lock().unwrap();
+    match rebuild_pipeline_cfg(&conn) {
+        Ok(cfg) => *state.pipeline_cfg.lock().unwrap() = cfg,
+        Err(err) => log::error!("failed to rebuild pipeline config: {err:#}"),
+    }
+}
+
+// ---- insights ----
+
+#[tauri::command]
+fn get_stats(state: tauri::State<AppState>) -> Result<stats::Stats, String> {
+    let conn = state.db.lock().unwrap();
+    stats::get_stats(&conn, chrono::Local::now().date_naive()).map_err(|e| e.to_string())
+}
+
+// ---- dictionary ----
+
+#[tauri::command]
+fn list_dictionary(state: tauri::State<AppState>) -> Result<Vec<db::DictEntry>, String> {
+    let conn = state.db.lock().unwrap();
+    db::list_dictionary(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_dict_entry(
+    state: tauri::State<AppState>,
+    kind: String,
+    phrase: String,
+    replacement: Option<String>,
+) -> Result<i64, String> {
+    let now = now_ms();
+    let id = {
+        let conn = state.db.lock().unwrap();
+        db::add_dictionary(&conn, &kind, &phrase, replacement.as_deref(), now)
+            .map_err(|e| e.to_string())?
+    };
+    refresh_pipeline_cfg(&state);
+    Ok(id)
+}
+
+#[tauri::command]
+fn delete_dict_entry(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    {
+        let conn = state.db.lock().unwrap();
+        db::delete_dictionary(&conn, id).map_err(|e| e.to_string())?;
+    }
+    refresh_pipeline_cfg(&state);
+    Ok(())
+}
+
+// ---- snippets ----
+
+#[tauri::command]
+fn list_snippets(state: tauri::State<AppState>) -> Result<Vec<db::Snippet>, String> {
+    let conn = state.db.lock().unwrap();
+    db::list_snippets(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn upsert_snippet(
+    state: tauri::State<AppState>,
+    id: Option<i64>,
+    trigger: String,
+    expansion: String,
+) -> Result<(), String> {
+    // `id` is accepted for the editor's convenience but the trigger is the
+    // natural key — upsert keys on it, so editing the expansion of an existing
+    // trigger updates in place regardless of `id`.
+    let _ = id;
+    {
+        let conn = state.db.lock().unwrap();
+        db::upsert_snippet(&conn, &trigger, &expansion, now_ms()).map_err(|e| e.to_string())?;
+    }
+    refresh_pipeline_cfg(&state);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_snippet(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+    {
+        let conn = state.db.lock().unwrap();
+        db::delete_snippet(&conn, id).map_err(|e| e.to_string())?;
+    }
+    refresh_pipeline_cfg(&state);
+    Ok(())
+}
+
+// ---- style ----
+
+#[tauri::command]
+fn get_style(state: tauri::State<AppState>) -> Result<db::StyleConfig, String> {
+    let conn = state.db.lock().unwrap();
+    db::get_style_config(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_style(state: tauri::State<AppState>, context: String, tone: String) -> Result<(), String> {
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_style(&conn, &context, &tone, now_ms()).map_err(|e| e.to_string())?;
+    }
+    refresh_pipeline_cfg(&state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_active_context(state: tauri::State<AppState>, context: String) -> Result<(), String> {
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_active_context(&conn, &context).map_err(|e| e.to_string())?;
+    }
+    refresh_pipeline_cfg(&state);
+    Ok(())
+}
+
+/// Current Unix epoch milliseconds — the `created_at` / `updated_at` stamp the
+/// DB rows expect.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +615,16 @@ pub fn run() {
             get_history,
             check_accessibility,
             test_format,
+            get_stats,
+            list_dictionary,
+            add_dict_entry,
+            delete_dict_entry,
+            list_snippets,
+            upsert_snippet,
+            delete_snippet,
+            get_style,
+            set_style,
+            set_active_context,
         ])
         .setup(|app| {
             // Tray icon with a minimal menu — Flow lives in the menu bar.

@@ -9,11 +9,6 @@
 //! `open` takes an explicit path so tests can target an in-memory or temp-file
 //! database while production code points at `settings::config_dir()/flow.db`.
 
-// The query/CRUD surface is built out across the management-ui batches and is
-// wired into the Tauri command layer in a later batch; until then some public
-// helpers are exercised only by tests.
-#![allow(dead_code)]
-
 use rusqlite::Connection;
 use std::path::Path;
 
@@ -226,7 +221,7 @@ pub fn get_history(
 /// A dictionary entry. `kind` is `"term"` (a proper noun / vocabulary bias for
 /// the STT prompt, `replacement` is `None`) or `"replacement"` (a literal
 /// substitution where `replacement` is the target text).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DictEntry {
     pub id: Option<i64>,
     pub kind: String,
@@ -281,7 +276,7 @@ pub fn delete_dictionary(conn: &Connection, id: i64) -> rusqlite::Result<usize> 
 // snippets
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Snippet {
     pub id: Option<i64>,
     pub trigger: String,
@@ -334,7 +329,7 @@ pub fn delete_snippet(conn: &Connection, id: i64) -> rusqlite::Result<usize> {
 // style_config + active context
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct StyleContext {
     pub context: String,
     pub tone: String,
@@ -342,7 +337,7 @@ pub struct StyleContext {
 }
 
 /// The four style contexts plus the currently active context key.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct StyleConfig {
     pub contexts: Vec<StyleContext>,
     pub active_context: String,

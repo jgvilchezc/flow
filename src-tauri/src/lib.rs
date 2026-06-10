@@ -4,6 +4,7 @@ mod format;
 mod inject;
 mod models;
 mod postprocess;
+mod prompt;
 mod settings;
 mod stats;
 mod stt;

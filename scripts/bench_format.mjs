@@ -22,15 +22,55 @@ const FEW_SHOT = JSON.parse(
   readFileSync(new URL("../src-tauri/prompts/few_shot.json", import.meta.url), "utf8"),
 );
 
-// Copied verbatim from src-tauri/src/prompt.rs style_fragment(tone, Context::Personal).
-// SOURCE OF TRUTH: src-tauri/src/prompt.rs — keep in sync.
+// Mirrors src-tauri/src/prompt.rs: style_fragment(tone, Context::Personal)
+// (imperative override + EN/ES examples, composed exactly like the
+// style_override! macro) and style_shots(tone) (the same examples as real
+// user/assistant turns). SOURCE OF TRUTH: src-tauri/src/prompt.rs — keep in sync.
+const STYLE_SHOT_INPUTS = [
+  "hey are you free for lunch tomorrow lets do twelve if that works",
+  "dale nos vemos mañana tipo a las ocho en casa",
+];
+const STYLE_SHOTS = {
+  formal: [
+    [STYLE_SHOT_INPUTS[0], "Hey, are you free for lunch tomorrow? Let's do 12 if that works."],
+    [STYLE_SHOT_INPUTS[1], "Dale, nos vemos mañana tipo a las 8 en casa."],
+  ],
+  casual: [
+    [STYLE_SHOT_INPUTS[0], "Hey are you free for lunch tomorrow? Let's do 12 if that works"],
+    [STYLE_SHOT_INPUTS[1], "Dale nos vemos mañana tipo a las 8 en casa"],
+  ],
+  very_casual: [
+    [STYLE_SHOT_INPUTS[0], "hey are you free for lunch tomorrow? let's do 12 if that works"],
+    [STYLE_SHOT_INPUTS[1], "dale nos vemos mañana tipo a las 8 en casa"],
+  ],
+};
+function styleOverride(tone, rules, exEn, exEs) {
+  return (
+    `STYLE OVERRIDE — ${tone} register for personal messages. When any rule above conflicts with this override, THIS OVERRIDE WINS. ${rules} Apply the register in the transcript's own language (Spanish stays Spanish, English stays English). Never change the speaker's words — adjust ONLY capitalization and punctuation.\n` +
+    `Style example: "hey are you free for lunch tomorrow lets do twelve if that works" -> "${exEn}"\n` +
+    `Style example: "dale nos vemos mañana tipo a las ocho en casa" -> "${exEs}"`
+  );
+}
+
 const STYLE_FRAGMENTS = {
-  formal:
-    "EN: Write personal messages in a formal register: full capitalization, complete punctuation, no slang. Apply this register in the transcript's own language.\nES: Escribe mensajes personales en registro formal: mayúsculas completas, puntuación completa, sin jerga. Aplica este registro en el idioma del dictado.",
-  casual:
-    "EN: Write personal messages in a casual register: keep sentence capitalization but use lighter punctuation; a relaxed, friendly tone. Apply this register in the transcript's own language.\nES: Escribe mensajes personales en registro casual: conserva las mayúsculas de oración pero usa puntuación ligera; tono relajado y amistoso. Aplica este registro en el idioma del dictado.",
-  very_casual:
-    "EN: Write personal messages in a very casual register: no leading capitals, minimal punctuation, chat-style. Apply this register in the transcript's own language.\nES: Escribe mensajes personales en registro muy casual: sin mayúsculas iniciales, puntuación mínima, estilo chat. Aplica este registro en el idioma del dictado.",
+  formal: styleOverride(
+    "formal",
+    "Capitalize every sentence and use complete punctuation: natural commas, question marks, and a final period on every sentence.",
+    "Hey, are you free for lunch tomorrow? Let's do 12 if that works.",
+    "Dale, nos vemos mañana tipo a las 8 en casa.",
+  ),
+  casual: styleOverride(
+    "casual",
+    "Keep sentence capitalization, but lighten punctuation: skip optional commas and drop the final period (question marks stay).",
+    "Hey are you free for lunch tomorrow? Let's do 12 if that works",
+    "Dale nos vemos mañana tipo a las 8 en casa",
+  ),
+  very_casual: styleOverride(
+    "very casual",
+    "Lowercase everything except proper nouns — sentence starts included, even the first word. Keep apostrophes and question marks, skip commas, and never end with a period. Chat style.",
+    "hey are you free for lunch tomorrow? let's do 12 if that works",
+    "dale nos vemos mañana tipo a las 8 en casa",
+  ),
 };
 
 // Mirrors prompt::augment_system_prompt(base, [], Some(fragment)).
@@ -45,8 +85,27 @@ const styleCases = [
   ["en", "hey so im gonna swing by around eight tomorrow and we can watch that movie you wanted"],
 ];
 
-async function chat(system, transcript) {
+// Mirrors prompt::apply_register: re-register base few-shot answers to the
+// active tone so every example demonstrates the same register.
+function applyRegister(text, tone) {
+  if (tone === "formal") return text;
+  let out = text
+    .split("\n")
+    .map((line) => line.replace(/(?<!\.)\.$/, ""))
+    .join("\n");
+  if (tone === "very_casual") {
+    out = out.replace(/(^|[.!?]\s+|\n[-\s]*)(\p{L})/gmu, (_, pre, ch) => pre + ch.toLowerCase());
+  }
+  return out;
+}
+
+async function chat(system, transcript, styleShots = [], tone = "formal") {
   const started = performance.now();
+  const fewShot = styleShots.length
+    ? FEW_SHOT.map((m) =>
+        m.role === "assistant" ? { ...m, content: applyRegister(m.content, tone) } : m,
+      )
+    : FEW_SHOT;
   const res = await fetch("http://localhost:11434/api/chat", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -56,7 +115,13 @@ async function chat(system, transcript) {
       options: { temperature: 0.1 },
       messages: [
         { role: "system", content: system },
-        ...FEW_SHOT,
+        ...fewShot,
+        // mirrors format.rs: the active tone demonstrates its register with
+        // its own user/assistant turns (prompt::style_shots)
+        ...styleShots.flatMap(([input, output]) => [
+          { role: "user", content: input },
+          { role: "assistant", content: output },
+        ]),
         { role: "user", content: transcript },
       ],
     }),
@@ -73,7 +138,7 @@ if (styleMode) {
     const system = augment(SYSTEM_PROMPT, STYLE_FRAGMENTS[tone]);
     console.log(`══ tone: ${tone}`);
     for (const [lang, transcript] of styleCases) {
-      const { ms, text } = await chat(system, transcript);
+      const { ms, text } = await chat(system, transcript, STYLE_SHOTS[tone], tone);
       console.log(`── ${lang} [${ms} ms]`);
       console.log(`   in : ${transcript}`);
       console.log(`   out: ${text.replaceAll("\n", "\n        ")}`);

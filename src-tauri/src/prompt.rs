@@ -68,48 +68,163 @@ pub enum Context {
     Other,
 }
 
-/// Returns a short bilingual register directive for `tone` in `context`.
+/// Composes one register-override fragment from a tone header, a context noun,
+/// the tone's rules, and a before→after example pair. The examples keep the
+/// speaker's words identical across tones — only capitalization and
+/// punctuation vary — so the `keeps_speaker_words` guard never fires on a
+/// style rewrite. Small instruct models obey imperative overrides with
+/// examples, not descriptive register prose (verified via bench_format.mjs).
+macro_rules! style_override {
+    ($tone:literal, $noun:literal, $rules:literal, $ex_en:literal, $ex_es:literal) => {
+        concat!(
+            "STYLE OVERRIDE — ", $tone, " register for ", $noun,
+            ". When any rule above conflicts with this override, THIS OVERRIDE WINS. ",
+            $rules,
+            " Apply the register in the transcript's own language (Spanish stays Spanish, English stays English). Never change the speaker's words — adjust ONLY capitalization and punctuation.\n",
+            "Style example: \"hey are you free for lunch tomorrow lets do twelve if that works\" -> \"", $ex_en, "\"\n",
+            "Style example: \"dale nos vemos mañana tipo a las ocho en casa\" -> \"", $ex_es, "\""
+        )
+    };
+}
+
+macro_rules! formal {
+    ($noun:literal) => {
+        style_override!(
+            "formal", $noun,
+            "Capitalize every sentence and use complete punctuation: natural commas, question marks, and a final period on every sentence.",
+            "Hey, are you free for lunch tomorrow? Let's do 12 if that works.",
+            "Dale, nos vemos mañana tipo a las 8 en casa."
+        )
+    };
+}
+
+macro_rules! casual {
+    ($noun:literal) => {
+        style_override!(
+            "casual", $noun,
+            "Keep sentence capitalization, but lighten punctuation: skip optional commas and drop the final period (question marks stay).",
+            "Hey are you free for lunch tomorrow? Let's do 12 if that works",
+            "Dale nos vemos mañana tipo a las 8 en casa"
+        )
+    };
+}
+
+macro_rules! very_casual {
+    ($noun:literal) => {
+        style_override!(
+            "very casual", $noun,
+            "Lowercase everything except proper nouns — sentence starts included, even the first word. Keep apostrophes and question marks, skip commas, and never end with a period. Chat style.",
+            "hey are you free for lunch tomorrow? let's do 12 if that works",
+            "dale nos vemos mañana tipo a las 8 en casa"
+        )
+    };
+}
+
+/// Returns the register-override directive for `tone` in `context`.
 ///
-/// Each fragment is two instruction lines (English, then Spanish) describing
-/// the register, and explicitly tells the formatter to apply that register in
-/// the transcript's own language (Spanish or English) — the directive text
-/// itself is in English (an artifact, not user-facing copy).
+/// The directive is an imperative block that explicitly takes precedence over
+/// the base prompt's normalization rules and anchors the register with one
+/// English and one Spanish before→after example (identical wording across
+/// tones; only caps/punctuation differ). Directive text is in English (an
+/// artifact, not user-facing copy).
 pub fn style_fragment(tone: Tone, context: Context) -> &'static str {
     match (tone, context) {
-        // --- Formal: full capitalization and complete punctuation. ---
-        (Tone::Formal, Context::Personal) =>
-            "EN: Write personal messages in a formal register: full capitalization, complete punctuation, no slang. Apply this register in the transcript's own language.\nES: Escribe mensajes personales en registro formal: mayúsculas completas, puntuación completa, sin jerga. Aplica este registro en el idioma del dictado.",
-        (Tone::Formal, Context::Work) =>
-            "EN: Write work messages in a formal register: full capitalization, complete punctuation, professional tone. Apply this register in the transcript's own language.\nES: Escribe mensajes de trabajo en registro formal: mayúsculas completas, puntuación completa, tono profesional. Aplica este registro en el idioma del dictado.",
-        (Tone::Formal, Context::Email) =>
-            "EN: Write email in a formal register: full capitalization, complete punctuation, courteous and professional. Apply this register in the transcript's own language.\nES: Escribe correos en registro formal: mayúsculas completas, puntuación completa, cortés y profesional. Aplica este registro en el idioma del dictado.",
-        (Tone::Formal, Context::Other) =>
-            "EN: Write general writing in a formal register: full capitalization, complete punctuation, no slang. Apply this register in the transcript's own language.\nES: Escribe en registro formal: mayúsculas completas, puntuación completa, sin jerga. Aplica este registro en el idioma del dictado.",
+        (Tone::Formal, Context::Personal) => formal!("personal messages"),
+        (Tone::Formal, Context::Work) => formal!("work messages"),
+        (Tone::Formal, Context::Email) => formal!("email"),
+        (Tone::Formal, Context::Other) => formal!("general writing"),
 
-        // --- Casual: capitalization kept, lighter punctuation. ---
-        (Tone::Casual, _) => match context {
-            Context::Personal =>
-                "EN: Write personal messages in a casual register: keep sentence capitalization but use lighter punctuation; a relaxed, friendly tone. Apply this register in the transcript's own language.\nES: Escribe mensajes personales en registro casual: conserva las mayúsculas de oración pero usa puntuación ligera; tono relajado y amistoso. Aplica este registro en el idioma del dictado.",
-            Context::Work =>
-                "EN: Write work messages in a casual register: keep sentence capitalization but use lighter punctuation; an approachable, collegial tone. Apply this register in the transcript's own language.\nES: Escribe mensajes de trabajo en registro casual: conserva las mayúsculas de oración pero usa puntuación ligera; tono cercano y colegiado. Aplica este registro en el idioma del dictado.",
-            Context::Email =>
-                "EN: Write email in a casual register: keep sentence capitalization but use lighter punctuation; a warm, conversational tone. Apply this register in the transcript's own language.\nES: Escribe correos en registro casual: conserva las mayúsculas de oración pero usa puntuación ligera; tono cálido y conversacional. Aplica este registro en el idioma del dictado.",
-            Context::Other =>
-                "EN: Write in a casual register: keep sentence capitalization but use lighter punctuation; a relaxed tone. Apply this register in the transcript's own language.\nES: Escribe en registro casual: conserva las mayúsculas de oración pero usa puntuación ligera; tono relajado. Aplica este registro en el idioma del dictado.",
-        },
+        (Tone::Casual, Context::Personal) => casual!("personal messages"),
+        (Tone::Casual, Context::Work) => casual!("work messages"),
+        (Tone::Casual, Context::Email) => casual!("email"),
+        (Tone::Casual, Context::Other) => casual!("general writing"),
 
-        // --- Very casual: no leading caps, minimal punctuation. ---
-        (Tone::VeryCasual, _) => match context {
-            Context::Personal =>
-                "EN: Write personal messages in a very casual register: no leading capitals, minimal punctuation, chat-style. Apply this register in the transcript's own language.\nES: Escribe mensajes personales en registro muy casual: sin mayúsculas iniciales, puntuación mínima, estilo chat. Aplica este registro en el idioma del dictado.",
-            Context::Work =>
-                "EN: Write work messages in a very casual register: no leading capitals, minimal punctuation, chat-style. Apply this register in the transcript's own language.\nES: Escribe mensajes de trabajo en registro muy casual: sin mayúsculas iniciales, puntuación mínima, estilo chat. Aplica este registro en el idioma del dictado.",
-            Context::Email =>
-                "EN: Write email in a very casual register: no leading capitals, minimal punctuation, chat-style. Apply this register in the transcript's own language.\nES: Escribe correos en registro muy casual: sin mayúsculas iniciales, puntuación mínima, estilo chat. Aplica este registro en el idioma del dictado.",
-            Context::Other =>
-                "EN: Write in a very casual register: no leading capitals, minimal punctuation, chat-style. Apply this register in the transcript's own language.\nES: Escribe en registro muy casual: sin mayúsculas iniciales, puntuación mínima, estilo chat. Aplica este registro en el idioma del dictado.",
-        },
+        (Tone::VeryCasual, Context::Personal) => very_casual!("personal messages"),
+        (Tone::VeryCasual, Context::Work) => very_casual!("work messages"),
+        (Tone::VeryCasual, Context::Email) => very_casual!("email"),
+        (Tone::VeryCasual, Context::Other) => very_casual!("general writing"),
     }
+}
+
+/// Register examples for `tone`, sent to the formatter as real user/assistant
+/// turns. Small instruct models imitate few-shot answers far more reliably
+/// than system-prompt prose — the base few-shot pairs all demonstrate
+/// capitalized, punctuated output, so without these turns they drown out the
+/// style directive (verified on gemma3:4b via bench_format.mjs). Wording is
+/// identical across tones; only capitalization and punctuation differ.
+pub fn style_shots(tone: Tone) -> [(&'static str, &'static str); 2] {
+    const EN_IN: &str = "hey are you free for lunch tomorrow lets do twelve if that works";
+    const ES_IN: &str = "dale nos vemos mañana tipo a las ocho en casa";
+    match tone {
+        Tone::Formal => [
+            (EN_IN, "Hey, are you free for lunch tomorrow? Let's do 12 if that works."),
+            (ES_IN, "Dale, nos vemos mañana tipo a las 8 en casa."),
+        ],
+        Tone::Casual => [
+            (EN_IN, "Hey are you free for lunch tomorrow? Let's do 12 if that works"),
+            (ES_IN, "Dale nos vemos mañana tipo a las 8 en casa"),
+        ],
+        Tone::VeryCasual => [
+            (EN_IN, "hey are you free for lunch tomorrow? let's do 12 if that works"),
+            (ES_IN, "dale nos vemos mañana tipo a las 8 en casa"),
+        ],
+    }
+}
+
+/// Deterministically re-registers example text to `tone` so every few-shot
+/// answer demonstrates the active register. Without this, the base few-shot
+/// pairs (all capitalized and punctuated) outweigh the tone's own example
+/// turns on small models — gemma3:4b lowercased very-casual output in only
+/// 1 of 3 runs until the base examples agreed with the register.
+///
+/// Formal is the identity: the base examples are already written formally.
+pub fn apply_register(text: &str, tone: Tone) -> String {
+    match tone {
+        Tone::Formal => text.to_string(),
+        Tone::Casual => strip_line_final_periods(text),
+        Tone::VeryCasual => lowercase_sentence_starts(&strip_line_final_periods(text)),
+    }
+}
+
+/// Removes a single trailing period at the end of each line ("..." and other
+/// terminators are left alone) — the "less punctuation" half of the casual
+/// registers.
+fn strip_line_final_periods(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim_end();
+            if trimmed.ends_with('.') && !trimmed.ends_with("..") {
+                &trimmed[..trimmed.len() - 1]
+            } else {
+                trimmed
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Lowercases the first alphabetic character of each sentence (line starts and
+/// after sentence-ending punctuation) — the "no caps" half of very casual.
+fn lowercase_sentence_starts(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut at_sentence_start = true;
+    for c in text.chars() {
+        if at_sentence_start && c.is_alphabetic() {
+            out.extend(c.to_lowercase());
+            at_sentence_start = false;
+        } else {
+            out.push(c);
+            match c {
+                '.' | '!' | '?' | '\n' => at_sentence_start = true,
+                _ => {
+                    if !c.is_whitespace() && c != '-' {
+                        at_sentence_start = false;
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Appends term-preservation and an optional style fragment to `base`.
@@ -179,11 +294,56 @@ mod tests {
         assert!(out.starts_with(base), "base must be preserved at the start");
         assert!(out.contains(fragment), "fragment must be appended");
         assert!(out.len() > base.len());
-        // Bilingual: both instruction lines present.
-        assert!(fragment.contains("EN:"));
-        assert!(fragment.contains("ES:"));
+        // Imperative override with explicit precedence over the base rules.
+        assert!(fragment.contains("OVERRIDE WINS"));
+        // Anchored with both an English and a Spanish before→after example.
+        assert_eq!(fragment.matches("Style example:").count(), 2);
         // Must instruct applying the register in the transcript's language.
-        assert!(fragment.to_lowercase().contains("language") || fragment.contains("idioma"));
+        assert!(fragment.to_lowercase().contains("language"));
+    }
+
+    #[test]
+    fn apply_register_formal_is_identity() {
+        let text = "The meeting is at 5 pm. Don't be late.";
+        assert_eq!(apply_register(text, Tone::Formal), text);
+    }
+
+    #[test]
+    fn apply_register_casual_drops_line_final_period() {
+        assert_eq!(
+            apply_register("The meeting is at 5 pm. Don't be late.", Tone::Casual),
+            "The meeting is at 5 pm. Don't be late"
+        );
+        // Multi-line: each line loses only its single trailing period.
+        assert_eq!(
+            apply_register("I need three things:\n- Milk.\n- Eggs.", Tone::Casual),
+            "I need three things:\n- Milk\n- Eggs"
+        );
+    }
+
+    #[test]
+    fn apply_register_very_casual_lowercases_sentence_starts() {
+        assert_eq!(
+            apply_register("The meeting is at 5 pm. Don't be late.", Tone::VeryCasual),
+            "the meeting is at 5 pm. don't be late"
+        );
+        // List items count as line starts; apostrophes survive.
+        assert_eq!(
+            apply_register("I need you to buy:\n- Milk\n- Eggs", Tone::VeryCasual),
+            "i need you to buy:\n- milk\n- eggs"
+        );
+    }
+
+    #[test]
+    fn style_shots_match_their_register() {
+        // very casual shots must themselves be lowercase, period-free.
+        for (_, output) in style_shots(Tone::VeryCasual) {
+            assert_eq!(output, apply_register(output, Tone::VeryCasual));
+        }
+        // casual shots carry no trailing period.
+        for (_, output) in style_shots(Tone::Casual) {
+            assert!(!output.ends_with('.'));
+        }
     }
 
     #[test]

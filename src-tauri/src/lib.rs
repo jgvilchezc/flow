@@ -234,10 +234,11 @@ fn word_count(text: &str) -> i64 {
         .count() as i64
 }
 
-/// Resolves the formatter style fragment for the active `(context, tone)` pair.
+/// Parses the active `(context, tone)` pair into typed style values for the
+/// formatter (which derives both the prompt fragment and the example turns).
 /// Unrecognized values (shouldn't happen — the DB CHECK constraints enforce the
 /// vocabulary) resolve to `None`, leaving the base prompt untouched.
-fn style_fragment_for(style: &(String, String)) -> Option<&'static str> {
+fn parse_style(style: &(String, String)) -> Option<(prompt::Tone, prompt::Context)> {
     let (context, tone) = style;
     let context = match context.as_str() {
         "personal" => prompt::Context::Personal,
@@ -252,7 +253,7 @@ fn style_fragment_for(style: &(String, String)) -> Option<&'static str> {
         "very_casual" => prompt::Tone::VeryCasual,
         _ => return None,
     };
-    Some(prompt::style_fragment(tone, context))
+    Some((tone, context))
 }
 
 fn stop_and_process(app: &AppHandle) {
@@ -302,11 +303,12 @@ fn stop_and_process(app: &AppHandle) {
             }
             Ok(raw) => {
                 // Format with proper-noun preservation and the active style
-                // fragment. On any formatter failure `format` returns the raw
-                // transcript — expansion still applies to that raw text below.
-                let fragment = style_fragment_for(&cfg.style);
+                // (prompt fragment + example turns). On any formatter failure
+                // `format` returns the raw transcript — expansion still
+                // applies to that raw text below.
+                let style = parse_style(&cfg.style);
                 let formatted =
-                    format::format(&settings, &raw, &cfg.dict_terms, fragment).await;
+                    format::format(&settings, &raw, &cfg.dict_terms, style).await;
                 // Deterministic replacements + snippet expansion run on the
                 // final text (LLM output or raw fallback alike).
                 let final_text =
@@ -707,16 +709,17 @@ mod tests {
     }
 
     #[test]
-    fn style_fragment_resolves_known_pairs() {
+    fn style_resolves_known_pairs() {
         let style = ("work".to_string(), "formal".to_string());
-        let fragment = style_fragment_for(&style).expect("known pair resolves");
-        assert_eq!(fragment, prompt::style_fragment(prompt::Tone::Formal, prompt::Context::Work));
+        let (tone, context) = parse_style(&style).expect("known pair resolves");
+        assert_eq!(tone, prompt::Tone::Formal);
+        assert_eq!(context, prompt::Context::Work);
     }
 
     #[test]
-    fn style_fragment_unknown_pair_is_none() {
-        assert!(style_fragment_for(&("bogus".into(), "casual".into())).is_none());
-        assert!(style_fragment_for(&("work".into(), "bogus".into())).is_none());
+    fn style_unknown_pair_is_none() {
+        assert!(parse_style(&("bogus".into(), "casual".into())).is_none());
+        assert!(parse_style(&("work".into(), "bogus".into())).is_none());
     }
 
     #[test]

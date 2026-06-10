@@ -11,15 +11,38 @@ use std::time::Duration;
 const SYSTEM_PROMPT: &str = include_str!("../prompts/system_prompt.txt");
 const FEW_SHOT_JSON: &str = include_str!("../prompts/few_shot.json");
 
-fn build_messages(transcript: &str, terms: &[String], fragment: Option<&str>) -> Vec<serde_json::Value> {
+fn build_messages(
+    transcript: &str,
+    terms: &[String],
+    style: Option<(crate::prompt::Tone, crate::prompt::Context)>,
+) -> Vec<serde_json::Value> {
     // Augment the base system prompt with the user's proper nouns and the active
-    // style fragment. With no terms and no fragment this is the identity of
+    // style fragment. With no terms and no style this is the identity of
     // SYSTEM_PROMPT, so behavior is unchanged from before management-ui.
+    let fragment = style.map(|(tone, context)| crate::prompt::style_fragment(tone, context));
     let system = crate::prompt::augment_system_prompt(SYSTEM_PROMPT, terms, fragment);
     let mut messages = vec![json!({ "role": "system", "content": system })];
-    let shots: Vec<serde_json::Value> =
+    let mut shots: Vec<serde_json::Value> =
         serde_json::from_str(FEW_SHOT_JSON).expect("invalid few_shot.json");
+    // The register must be demonstrated, not described: every assistant
+    // example is re-registered to the active tone so all shots agree — a
+    // couple of style turns can't outweigh five capitalized base answers on
+    // a small model.
+    if let Some((tone, _)) = style {
+        for shot in &mut shots {
+            if shot["role"] == "assistant" {
+                let content = shot["content"].as_str().unwrap_or_default();
+                shot["content"] = json!(crate::prompt::apply_register(content, tone));
+            }
+        }
+    }
     messages.extend(shots);
+    if let Some((tone, _)) = style {
+        for (input, output) in crate::prompt::style_shots(tone) {
+            messages.push(json!({ "role": "user", "content": input }));
+            messages.push(json!({ "role": "assistant", "content": output }));
+        }
+    }
     messages.push(json!({ "role": "user", "content": transcript }));
     messages
 }
@@ -35,7 +58,7 @@ async fn format_ollama(
     model: &str,
     transcript: &str,
     terms: &[String],
-    fragment: Option<&str>,
+    style: Option<(crate::prompt::Tone, crate::prompt::Context)>,
 ) -> Result<String> {
     let body = json!({
         "model": model,
@@ -43,7 +66,7 @@ async fn format_ollama(
         // keep the model resident so dictation after idle doesn't pay a reload
         "keep_alive": "60m",
         "options": { "temperature": 0.1 },
-        "messages": build_messages(transcript, terms, fragment)
+        "messages": build_messages(transcript, terms, style)
     });
     let response = http()
         .post("http://localhost:11434/api/chat")
@@ -66,7 +89,7 @@ async fn format_groq(
     model: &str,
     transcript: &str,
     terms: &[String],
-    fragment: Option<&str>,
+    style: Option<(crate::prompt::Tone, crate::prompt::Context)>,
 ) -> Result<String> {
     if api_key.is_empty() {
         return Err(anyhow!("Groq API key is not set"));
@@ -74,7 +97,7 @@ async fn format_groq(
     let body = json!({
         "model": model,
         "temperature": 0.1,
-        "messages": build_messages(transcript, terms, fragment)
+        "messages": build_messages(transcript, terms, style)
     });
     let response = http()
         .post("https://api.groq.com/openai/v1/chat/completions")
@@ -135,7 +158,7 @@ pub async fn format(
     settings: &Settings,
     transcript: &str,
     terms: &[String],
-    fragment: Option<&str>,
+    style: Option<(crate::prompt::Tone, crate::prompt::Context)>,
 ) -> String {
     if transcript.is_empty() {
         return String::new();
@@ -143,7 +166,7 @@ pub async fn format(
     let result = match settings.formatter {
         Formatter::None => return transcript.to_string(),
         Formatter::Ollama => {
-            format_ollama(&settings.ollama_model, transcript, terms, fragment).await
+            format_ollama(&settings.ollama_model, transcript, terms, style).await
         }
         Formatter::Groq => {
             format_groq(
@@ -151,7 +174,7 @@ pub async fn format(
                 &settings.groq_llm_model,
                 transcript,
                 terms,
-                fragment,
+                style,
             )
             .await
         }

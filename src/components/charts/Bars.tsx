@@ -18,6 +18,11 @@ function fmt(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
+/** "1 word" but "2 words" — units here are plain English plurals in -s. */
+function pluralize(n: number, unit: string): string {
+  return Math.round(n) === 1 ? unit.replace(/s$/, "") : unit;
+}
+
 /**
  * Horizontal magnitude bars: a label, a track filled to the value's share of
  * the largest value, and the numbers on the right. Used for per-app usage. The
@@ -42,11 +47,11 @@ export function Bars({
                 {d.label}
               </span>
               <span className="shrink-0 text-[12px] tabular-nums text-muted">
-                {fmt(d.value)} {valueUnit}
+                {fmt(d.value)} {pluralize(d.value, valueUnit)}
                 {d.count != null && (
                   <>
                     {" · "}
-                    {fmt(d.count)} {countUnit}
+                    {fmt(d.count)} {pluralize(d.count, countUnit)}
                   </>
                 )}
               </span>

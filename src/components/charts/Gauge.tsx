@@ -27,9 +27,10 @@ function point(t: number, radius: number) {
 function arcPath(t0: number, t1: number): string {
   const a = point(t0, R);
   const b = point(t1, R);
-  const large = t1 - t0 > 0.5 ? 1 : 0;
-  // sweep=1 draws clockwise from a to b across the top.
-  return `M ${a.x.toFixed(2)} ${a.y.toFixed(2)} A ${R} ${R} 0 ${large} 1 ${b.x.toFixed(2)} ${b.y.toFixed(2)}`;
+  // The gauge spans at most a semicircle, so the arc never exceeds 180° and
+  // the large-arc flag must stay 0 — setting it makes SVG solve for a
+  // different center and the sweep renders split.
+  return `M ${a.x.toFixed(2)} ${a.y.toFixed(2)} A ${R} ${R} 0 0 1 ${b.x.toFixed(2)} ${b.y.toFixed(2)}`;
 }
 
 /**

@@ -638,7 +638,7 @@ pub fn run() {
                 .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "settings" => {
-                        if let Some(window) = app.get_webview_window("settings") {
+                        if let Some(window) = app.get_webview_window("main") {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -665,10 +665,10 @@ pub fn run() {
                 log::error!("failed to register hotkey: {err:#}");
             }
 
-            // Show settings on first run so the user downloads a model.
+            // Show the main window on first run so the user downloads a model.
             let first_run = !models::REGISTRY.iter().any(|m| models::is_downloaded(m.key));
             if first_run {
-                if let Some(window) = app.get_webview_window("settings") {
+                if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
@@ -676,8 +676,8 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the settings window hides it; the app lives in the tray.
-            if window.label() == "settings" {
+            // Closing the main window hides it; the app lives in the tray.
+            if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
                     let _ = window.hide();

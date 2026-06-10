@@ -13,11 +13,11 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "label": "settings",
+        "label": "main",
         "title": "Flow",
         "url": "index.html",
-        "width": 760,
-        "height": 600,
+        "width": 960,
+        "height": 680,
         "minWidth": 640,
         "minHeight": 480,
         "visible": false,

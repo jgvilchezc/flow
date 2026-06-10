@@ -73,6 +73,17 @@ export function SettingsView() {
       .catch(console.error);
     refreshModels();
 
+    // While the permission is missing, poll so the banner clears itself the
+    // moment the user flips the toggle in System Settings — the grant
+    // happens outside the app, so a mount-only check goes stale.
+    const poll = setInterval(() => {
+      invoke<boolean>("check_accessibility")
+        .then((granted) => {
+          setAccessibility((prev) => (prev === false ? granted : prev));
+        })
+        .catch(console.error);
+    }, 2000);
+
     const unlistenProgress = listen<DownloadProgress>(
       "flow://download-progress",
       (event) => {
@@ -84,6 +95,7 @@ export function SettingsView() {
       },
     );
     return () => {
+      clearInterval(poll);
       void unlistenProgress.then((fn) => fn());
     };
   }, [refreshModels]);

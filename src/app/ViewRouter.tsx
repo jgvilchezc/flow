@@ -1,4 +1,4 @@
-import Settings from "../Settings";
+import { SettingsView } from "../views/SettingsView";
 import { EmptyState } from "../components/ui/EmptyState";
 import { useView, type View } from "./ViewContext";
 
@@ -48,7 +48,7 @@ export function ViewRouter() {
   const { view } = useView();
 
   if (view === "settings") {
-    return <Settings />;
+    return <SettingsView />;
   }
 
   const placeholder = PLACEHOLDERS[view];

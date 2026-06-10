@@ -3,7 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "../lib/cn";
 import { useView, type View } from "./ViewContext";
 
-const REPO_URL = "https://github.com/jgvilchez/flow";
+const REPO_URL = "https://github.com/jgvilchezc/flow";
 
 /** Inline 1.5px-stroke icons — one consistent line-icon family, no icon lib. */
 const icons: Record<View | "help", ReactNode> = {

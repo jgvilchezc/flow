@@ -29,7 +29,13 @@ export default function Overlay() {
             <i />
             <i />
           </span>
-          <span className="pill__label">Listening</span>
+          <span
+            className={`pill__label${
+              overlay.mode === "prompt_engineer" ? " pill__label--pe" : ""
+            }`}
+          >
+            {overlay.mode === "prompt_engineer" ? "Prompt Engineer" : "Listening"}
+          </span>
         </>
       )}
       {overlay.state === "processing" && (

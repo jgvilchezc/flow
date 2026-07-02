@@ -119,6 +119,13 @@ body.overlay-window {
   font-size: 12px;
 }
 
+/* Prompt-engineer dictations get a subtle lilac tint (Wispr-style accent) so
+   the pill reads as a distinct mode while listening. */
+.pill__label--pe {
+  color: #b9a7ff;
+  font-weight: 500;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.5; transform: scale(0.8); }

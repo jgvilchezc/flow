@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const MIN_RECORDING_SECS: f32 = 0.3;
@@ -30,6 +30,12 @@ const MIN_WHISPER_SAMPLES: usize = (audio::WHISPER_SAMPLE_RATE as usize * 12) / 
 struct OverlayState {
     state: &'static str,
     message: String,
+    /// The resolved formatting mode label for a `recording` state
+    /// (`prompt_engineer` | `style`), so the pill can show "Prompt Engineer"
+    /// instead of "Listening". `None` (and omitted from the payload) for every
+    /// non-recording state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'static str>,
 }
 
 /// The slice of durable configuration the dictation pipeline needs on every
@@ -143,11 +149,24 @@ fn open_database() -> rusqlite::Connection {
 }
 
 fn emit_state(app: &AppHandle, state: &'static str, message: impl Into<String>) {
+    emit_state_full(app, state, message, None);
+}
+
+/// Emits `flow://state` with an optional `mode` label. Only the `recording`
+/// state carries a mode (`prompt_engineer` | `style`); everything else passes
+/// `None`, which is omitted from the serialized payload.
+fn emit_state_full(
+    app: &AppHandle,
+    state: &'static str,
+    message: impl Into<String>,
+    mode: Option<&'static str>,
+) {
     let _ = app.emit(
         "flow://state",
         OverlayState {
             state,
             message: message.into(),
+            mode,
         },
     );
 }
@@ -156,22 +175,45 @@ fn overlay_window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("overlay")
 }
 
+/// Resizes the overlay window. `resizable: false` in `tauri.conf.json` only
+/// blocks *user* resizing, but to keep programmatic resizes robust across
+/// platforms we briefly re-enable the flag around the call and restore it.
+fn set_overlay_size(window: &WebviewWindow, width: f64, height: f64) {
+    let _ = window.set_resizable(true);
+    let _ = window.set_size(LogicalSize::new(width, height));
+    let _ = window.set_resizable(false);
+}
+
+/// Restores the overlay to its compact pill geometry and re-enables
+/// click-through. Used both when a fresh dictation starts and when the
+/// post-dictation card is dismissed, so the window never lingers card-sized.
+fn restore_pill(window: &WebviewWindow) {
+    let _ = window.set_ignore_cursor_events(true);
+    set_overlay_size(window, 240.0, 56.0);
+}
+
 /// Pins the overlay bottom-center of the primary monitor so it floats above
 /// the dock like Flow's pill.
+fn position_overlay(window: &WebviewWindow) {
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let pos = monitor.position();
+        if let Ok(win_size) = window.outer_size() {
+            let x = pos.x + (size.width as i32 - win_size.width as i32) / 2;
+            let y = pos.y + size.height as i32 - win_size.height as i32 - (90.0 * scale) as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+    }
+}
+
+/// Shows the overlay as the compact pill. Always restores pill geometry and
+/// click-through first, so a pending dictation cleanly takes over from an open
+/// result card.
 fn show_overlay(app: &AppHandle) {
     if let Some(window) = overlay_window(app) {
-        if let Ok(Some(monitor)) = window.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let size = monitor.size();
-            let pos = monitor.position();
-            if let Ok(win_size) = window.outer_size() {
-                let x = pos.x + (size.width as i32 - win_size.width as i32) / 2;
-                let y = pos.y + size.height as i32
-                    - win_size.height as i32
-                    - (90.0 * scale) as i32;
-                let _ = window.set_position(PhysicalPosition::new(x, y));
-            }
-        }
+        restore_pill(&window);
+        position_overlay(&window);
         let _ = window.show();
     }
 }
@@ -179,6 +221,15 @@ fn show_overlay(app: &AppHandle) {
 fn hide_overlay(app: &AppHandle) {
     if let Some(window) = overlay_window(app) {
         let _ = window.hide();
+    }
+}
+
+/// The label the overlay uses to distinguish a prompt-engineer dictation from a
+/// style one (drives the pill copy while listening).
+fn mode_label(mode: &prompt::Mode) -> &'static str {
+    match mode {
+        prompt::Mode::PromptEngineer => "prompt_engineer",
+        prompt::Mode::Style(_) => "style",
     }
 }
 
@@ -207,7 +258,19 @@ fn start_recording(app: &AppHandle) {
     *state.pending_app.lock().unwrap() = frontmost::frontmost_app_name();
     match recorder.start() {
         Ok(()) => {
-            emit_state(app, "recording", "");
+            // Resolve the formatting mode from the frontmost app so the pill can
+            // show "Prompt Engineer" while listening. Same inputs as the hot
+            // path's `resolve_mode`; reads only the cached config, never SQLite.
+            let label = {
+                let pending = state.pending_app.lock().unwrap();
+                let cfg = state.pipeline_cfg.lock().unwrap();
+                mode_label(&resolve_mode(
+                    pending.as_deref(),
+                    &cfg.app_mode_map,
+                    &cfg.style,
+                ))
+            };
+            emit_state_full(app, "recording", "", Some(label));
             show_overlay(app);
         }
         Err(err) => {
@@ -1037,6 +1100,19 @@ mod tests {
         assert_eq!(
             quick_clean_bypass(&mode, "first buy milk second buy eggs", 20, true),
             None
+        );
+    }
+
+    #[test]
+    fn mode_label_maps_modes() {
+        assert_eq!(mode_label(&prompt::Mode::PromptEngineer), "prompt_engineer");
+        assert_eq!(mode_label(&prompt::Mode::Style(None)), "style");
+        assert_eq!(
+            mode_label(&prompt::Mode::Style(Some((
+                prompt::Tone::Casual,
+                prompt::Context::Personal
+            )))),
+            "style"
         );
     }
 

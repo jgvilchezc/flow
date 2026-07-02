@@ -50,6 +50,9 @@ export interface HistoryEntry {
 export interface OverlayState {
   state: "idle" | "recording" | "processing" | "error";
   message: string;
+  // Present only on the `recording` state — the resolved formatting mode so the
+  // pill can show "Prompt Engineer" instead of "Listening". Omitted otherwise.
+  mode?: "prompt_engineer" | "style";
 }
 
 /** Mirrors `AppModeEntry` in lib.rs. A per-app formatting-mode override. */

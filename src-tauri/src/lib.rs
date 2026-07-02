@@ -7,6 +7,7 @@ mod inject;
 mod models;
 mod postprocess;
 mod prompt;
+mod quickclean;
 mod settings;
 mod stats;
 mod stt;

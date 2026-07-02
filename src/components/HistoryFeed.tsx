@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { HistoryEntry } from "../types";
+import { wordDiff, type DiffSegment } from "../lib/diff";
 import { cn } from "../lib/cn";
 
 /** A day bucket: a heading plus its entries, newest first within the day. */
@@ -63,11 +64,73 @@ function groupByDay(entries: HistoryEntry[]): DayGroup[] {
 /** Collapse threshold — rows longer than this get a "Show more" toggle. */
 const TRUNCATE_AT = 280;
 
+/** "STT 320ms · Format 410ms · Inject 95ms" — omits any stage that is null. */
+function timingLabel(entry: HistoryEntry): string {
+  const parts: string[] = [];
+  if (entry.stt_ms != null) parts.push(`STT ${entry.stt_ms}ms`);
+  if (entry.format_ms != null) parts.push(`Format ${entry.format_ms}ms`);
+  if (entry.inject_ms != null) parts.push(`Inject ${entry.inject_ms}ms`);
+  return parts.join(" · ");
+}
+
+/**
+ * Renders diff segments inline: removals struck through and muted, additions on
+ * a subtle accent wash, equal text plain. Preserves the source spacing.
+ */
+function DiffText({ segments }: { segments: DiffSegment[] }) {
+  return (
+    <p className="select-text whitespace-pre-wrap text-[13.5px] leading-relaxed text-text">
+      {segments.map((seg, idx) => {
+        if (seg.type === "add") {
+          return (
+            <span
+              key={idx}
+              className="rounded-[3px] bg-accent-soft text-accent"
+            >
+              {seg.text}
+            </span>
+          );
+        }
+        if (seg.type === "remove") {
+          return (
+            <span key={idx} className="text-muted line-through">
+              {seg.text}
+            </span>
+          );
+        }
+        return <span key={idx}>{seg.text}</span>;
+      })}
+    </p>
+  );
+}
+
 function FeedRow({ entry }: { entry: HistoryEntry }) {
   const [expanded, setExpanded] = useState(false);
-  const text = entry.formatted || entry.raw;
-  const long = text.length > TRUNCATE_AT;
-  const shown = !expanded && long ? `${text.slice(0, TRUNCATE_AT)}…` : text;
+  const [showDiff, setShowDiff] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const raw = entry.raw ?? "";
+  const formatted = entry.formatted || raw;
+  // A diff is only meaningful when we have a raw transcript that actually
+  // differs from the formatted output. Legacy rows with no/equal raw fall back
+  // to the plain formatted text.
+  const hasDiff = raw.length > 0 && raw !== formatted;
+  const segments = useMemo(
+    () => (hasDiff ? wordDiff(raw, formatted) : []),
+    [hasDiff, raw, formatted],
+  );
+
+  const long = formatted.length > TRUNCATE_AT;
+  const shown =
+    !expanded && long ? `${formatted.slice(0, TRUNCATE_AT)}…` : formatted;
+  const timings = timingLabel(entry);
+
+  const copyRaw = () => {
+    void navigator.clipboard.writeText(raw).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
 
   return (
     <li className="group flex gap-4 rounded-[var(--radius)] px-3 py-2.5 transition-colors duration-150 hover:bg-bg">
@@ -78,18 +141,50 @@ function FeedRow({ entry }: { entry: HistoryEntry }) {
         {timeLabel(entry.at)}
       </time>
       <div className="min-w-0 flex-1">
-        <p className="select-text whitespace-pre-wrap text-[13.5px] leading-relaxed text-text">
-          {shown}
-        </p>
-        {long && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="mt-1 cursor-pointer text-[12px] font-medium text-accent outline-none hover:underline focus-visible:underline"
-          >
-            {expanded ? "Show less" : "Show more"}
-          </button>
+        {showDiff && hasDiff ? (
+          <DiffText segments={segments} />
+        ) : (
+          <p className="select-text whitespace-pre-wrap text-[13.5px] leading-relaxed text-text">
+            {shown}
+          </p>
         )}
+
+        {/* Meta row: timings always shown when present; controls reveal on
+            hover / focus so the feed stays calm at rest. */}
+        <div className="mt-1 flex items-center gap-3 text-[12px]">
+          {timings && (
+            <span className="tabular-nums text-muted">{timings}</span>
+          )}
+          {long && !showDiff && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="cursor-pointer font-medium text-accent outline-none hover:underline focus-visible:underline"
+            >
+              {expanded ? "Show less" : "Show more"}
+            </button>
+          )}
+          <span className="ml-auto flex items-center gap-3 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+            {hasDiff && (
+              <button
+                type="button"
+                onClick={() => setShowDiff((v) => !v)}
+                className="cursor-pointer font-medium text-muted outline-none hover:text-text focus-visible:text-text hover:underline focus-visible:underline"
+              >
+                {showDiff ? "Hide diff" : "Diff"}
+              </button>
+            )}
+            {raw.length > 0 && (
+              <button
+                type="button"
+                onClick={copyRaw}
+                className="cursor-pointer font-medium text-muted outline-none hover:text-text focus-visible:text-text hover:underline focus-visible:underline"
+              >
+                {copied ? "Copied" : "Copy raw"}
+              </button>
+            )}
+          </span>
+        </div>
       </div>
     </li>
   );

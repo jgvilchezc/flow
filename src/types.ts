@@ -40,6 +40,11 @@ export interface HistoryEntry {
   word_count?: number;
   recording_ms?: number;
   app?: string | null;
+  // Per-stage timings (ms). Nullable — legacy rows written before these
+  // columns existed report null, so the viewer only surfaces them when set.
+  stt_ms?: number | null;
+  format_ms?: number | null;
+  inject_ms?: number | null;
 }
 
 export interface OverlayState {

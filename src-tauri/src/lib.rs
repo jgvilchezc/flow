@@ -333,6 +333,10 @@ fn stop_and_process(app: &AppHandle) {
                     recording_ms,
                     engine: format!("{:?}", settings.stt_engine),
                     app: pending_app,
+                    // Per-stage timings are wired in a later batch.
+                    stt_ms: None,
+                    format_ms: None,
+                    inject_ms: None,
                 };
                 let row = {
                     let conn = state.db.lock().unwrap();

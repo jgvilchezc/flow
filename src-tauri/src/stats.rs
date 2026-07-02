@@ -241,6 +241,9 @@ mod tests {
             recording_ms: rec_ms,
             engine: "Local".into(),
             app: app.map(str::to_string),
+            stt_ms: None,
+            format_ms: None,
+            inject_ms: None,
         }
     }
 

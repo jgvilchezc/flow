@@ -1,0 +1,42 @@
+[
+  {
+    "role": "user",
+    "content": "ok so um I have this function in utils.ts that like formats dates and it's kind of a mess I want you to uh clean it up and also make it handle null inputs"
+  },
+  {
+    "role": "assistant",
+    "content": "Refactor the date-formatting function in utils.ts:\n- Clean up the implementation\n- Handle null inputs gracefully"
+  },
+  {
+    "role": "user",
+    "content": "quiero que revises el archivo main.rs y este busques bugs o sea de memoria y también que me digas si hay problemas de concurrencia"
+  },
+  {
+    "role": "assistant",
+    "content": "Revisa el archivo main.rs e identifica:\n- Bugs de memoria\n- Problemas de concurrencia"
+  },
+  {
+    "role": "user",
+    "content": "can you write a function no wait a React hook called useDebounce that takes a value and a delay in milliseconds and returns the debounced value"
+  },
+  {
+    "role": "assistant",
+    "content": "Write a React hook called useDebounce that takes a value and a delay in milliseconds and returns the debounced value."
+  },
+  {
+    "role": "user",
+    "content": "um I need you to add retry logic to the fetchUser call in api.ts using axios you know retry three times with exponential backoff and only on network errors not on four zero four"
+  },
+  {
+    "role": "assistant",
+    "content": "Add retry logic to the fetchUser call in api.ts using axios:\n- Retry up to 3 times with exponential backoff\n- Retry only on network errors, not on 404"
+  },
+  {
+    "role": "user",
+    "content": "necesito actualizar la dependencia de express a la versión 5.1.0 y bueno también arreglar los breaking changes que eso traiga"
+  },
+  {
+    "role": "assistant",
+    "content": "Actualiza la dependencia de express a la versión 5.1.0 y corrige los breaking changes que introduzca."
+  }
+]

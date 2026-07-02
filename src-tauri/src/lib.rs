@@ -308,9 +308,9 @@ fn stop_and_process(app: &AppHandle) {
                 // (prompt fragment + example turns). On any formatter failure
                 // `format` returns the raw transcript — expansion still
                 // applies to that raw text below.
-                let style = parse_style(&cfg.style);
+                let mode = prompt::Mode::Style(parse_style(&cfg.style));
                 let formatted =
-                    format::format(&settings, &raw, &cfg.dict_terms, style).await;
+                    format::format(&settings, &raw, &cfg.dict_terms, &mode).await;
                 // Deterministic replacements + snippet expansion run on the
                 // final text (LLM output or raw fallback alike).
                 let final_text =
@@ -457,7 +457,7 @@ fn request_accessibility() -> bool {
 #[tauri::command]
 async fn test_format(state: tauri::State<'_, AppState>, text: String) -> Result<String, String> {
     let settings = state.settings.lock().unwrap().clone();
-    Ok(format::format(&settings, &text, &[], None).await)
+    Ok(format::format(&settings, &text, &[], &prompt::Mode::Style(None)).await)
 }
 
 /// Rebuilds the in-memory [`PipelineConfig`] from the database. Call after every

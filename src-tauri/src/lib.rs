@@ -2,6 +2,7 @@ mod audio;
 mod db;
 mod format;
 mod frontmost;
+mod http;
 mod inject;
 mod models;
 mod postprocess;

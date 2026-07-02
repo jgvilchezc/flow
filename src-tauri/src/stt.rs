@@ -127,7 +127,7 @@ async fn transcribe_groq(
         form = form.text("prompt", prompt.to_string());
     }
 
-    let response = reqwest::Client::new()
+    let response = crate::http::client()
         .post("https://api.groq.com/openai/v1/audio/transcriptions")
         .bearer_auth(api_key)
         .multipart(form)

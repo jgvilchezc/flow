@@ -1,7 +1,6 @@
 use crate::settings::{Formatter, Settings};
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
-use std::time::Duration;
 
 /// This prompt replicates Wispr Flow's post-processing pass: a small instruct
 /// model rewrites the raw transcript into clean, intent-aware text. The
@@ -47,13 +46,6 @@ fn build_messages(
     messages
 }
 
-fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .build()
-        .expect("failed to build http client")
-}
-
 async fn format_ollama(
     model: &str,
     transcript: &str,
@@ -68,7 +60,7 @@ async fn format_ollama(
         "options": { "temperature": 0.1 },
         "messages": build_messages(transcript, terms, style)
     });
-    let response = http()
+    let response = crate::http::client()
         .post("http://localhost:11434/api/chat")
         .json(&body)
         .send()
@@ -99,7 +91,7 @@ async fn format_groq(
         "temperature": 0.1,
         "messages": build_messages(transcript, terms, style)
     });
-    let response = http()
+    let response = crate::http::client()
         .post("https://api.groq.com/openai/v1/chat/completions")
         .bearer_auth(api_key)
         .json(&body)

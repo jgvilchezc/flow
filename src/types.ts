@@ -10,6 +10,8 @@ export interface Settings {
   groq_api_key: string;
   groq_llm_model: string;
   hotkey: string;
+  quick_clean_enabled: boolean;
+  quick_clean_max_words: number;
 }
 
 export interface ModelStatus {
@@ -38,9 +40,30 @@ export interface HistoryEntry {
   word_count?: number;
   recording_ms?: number;
   app?: string | null;
+  // Per-stage timings (ms). Nullable — legacy rows written before these
+  // columns existed report null, so the viewer only surfaces them when set.
+  stt_ms?: number | null;
+  format_ms?: number | null;
+  inject_ms?: number | null;
 }
 
 export interface OverlayState {
   state: "idle" | "recording" | "processing" | "error";
   message: string;
+}
+
+/** Mirrors `AppModeEntry` in lib.rs. A per-app formatting-mode override. */
+export interface AppModeEntry {
+  app_name: string;
+  mode: "prompt_engineer" | "style";
+}
+
+/**
+ * Mirrors `update::UpdateInfo`. Payload of the `flow://update-available` event
+ * and the `check_for_update` command result.
+ */
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  notes: string | null;
 }

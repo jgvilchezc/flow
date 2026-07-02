@@ -14,7 +14,7 @@ use std::path::Path;
 
 /// The schema version this build expects. `migrate` walks the ladder until the
 /// database reaches this version.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Opens (creating if absent) the database at `path`, enabling WAL journaling
 /// and foreign-key enforcement, then runs every pending migration.
@@ -64,6 +64,11 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         migrate_v1(conn)?;
         set_user_version(conn, 1)?;
         version = 1;
+    }
+    if version < 2 {
+        migrate_v2(conn)?;
+        set_user_version(conn, 2)?;
+        version = 2;
     }
     debug_assert_eq!(version, SCHEMA_VERSION);
     Ok(())
@@ -127,6 +132,43 @@ fn migrate_v1(conn: &Connection) -> rusqlite::Result<()> {
     )
 }
 
+/// v1 -> v2: per-stage timing on history and the per-app formatting mode map.
+///
+/// The three timing columns are nullable so pre-v2 rows (and rows written
+/// before the pipeline records timings) round-trip as `NULL`. `app_mode_map`
+/// remembers whether a given frontmost app should be formatted with the
+/// prompt-engineer or the style pipeline; it is seeded with the developer and
+/// AI tools that default to prompt-engineering.
+fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        r#"
+        ALTER TABLE history ADD COLUMN stt_ms    INTEGER;
+        ALTER TABLE history ADD COLUMN format_ms INTEGER;
+        ALTER TABLE history ADD COLUMN inject_ms INTEGER;
+
+        CREATE TABLE IF NOT EXISTS app_mode_map (
+            app_name   TEXT PRIMARY KEY,
+            mode       TEXT NOT NULL
+                       CHECK(mode IN ('prompt_engineer','style')),
+            updated_at INTEGER NOT NULL
+        );
+
+        INSERT OR IGNORE INTO app_mode_map (app_name, mode, updated_at) VALUES
+            ('Terminal',           'prompt_engineer', 0),
+            ('iTerm2',             'prompt_engineer', 0),
+            ('Warp',               'prompt_engineer', 0),
+            ('Ghostty',            'prompt_engineer', 0),
+            ('Visual Studio Code', 'prompt_engineer', 0),
+            ('Cursor',             'prompt_engineer', 0),
+            ('Windsurf',           'prompt_engineer', 0),
+            ('Zed',                'prompt_engineer', 0),
+            ('Xcode',              'prompt_engineer', 0),
+            ('Claude',             'prompt_engineer', 0),
+            ('ChatGPT',            'prompt_engineer', 0);
+        "#,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // history
 // ---------------------------------------------------------------------------
@@ -148,14 +190,21 @@ pub struct HistoryRow {
     pub engine: String,
     /// Frontmost application bundle/name, when known.
     pub app: Option<String>,
+    /// Milliseconds spent in speech-to-text. `None` for pre-v2 rows.
+    pub stt_ms: Option<i64>,
+    /// Milliseconds spent in the formatting pass. `None` for pre-v2 rows.
+    pub format_ms: Option<i64>,
+    /// Milliseconds spent injecting the text. `None` for pre-v2 rows.
+    pub inject_ms: Option<i64>,
 }
 
 /// Inserts a history row, returning its assigned rowid.
 pub fn insert_history(conn: &Connection, row: &HistoryRow) -> rusqlite::Result<i64> {
     conn.execute(
         "INSERT INTO history
-            (at, raw, formatted, word_count, duration_ms, recording_ms, engine, app)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (at, raw, formatted, word_count, duration_ms, recording_ms, engine, app,
+             stt_ms, format_ms, inject_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
             row.at,
             row.raw,
@@ -165,6 +214,9 @@ pub fn insert_history(conn: &Connection, row: &HistoryRow) -> rusqlite::Result<i
             row.recording_ms,
             row.engine,
             row.app,
+            row.stt_ms,
+            row.format_ms,
+            row.inject_ms,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -189,10 +241,13 @@ pub fn get_history(
             recording_ms: row.get(6)?,
             engine: row.get(7)?,
             app: row.get(8)?,
+            stt_ms: row.get(9)?,
+            format_ms: row.get(10)?,
+            inject_ms: row.get(11)?,
         })
     };
-    const COLS: &str =
-        "id, at, raw, formatted, word_count, duration_ms, recording_ms, engine, app";
+    const COLS: &str = "id, at, raw, formatted, word_count, duration_ms, recording_ms, engine, app, \
+         stt_ms, format_ms, inject_ms";
 
     match before_at {
         Some(before) => {
@@ -407,6 +462,46 @@ pub fn set_active_context(conn: &Connection, context: &str) -> rusqlite::Result<
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// app_mode_map
+// ---------------------------------------------------------------------------
+
+/// Lists the per-app formatting-mode overrides as `(app_name, mode)` pairs,
+/// ordered by app name for a stable UI.
+pub fn list_app_mode_map(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT app_name, mode FROM app_mode_map ORDER BY app_name COLLATE NOCASE",
+    )?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect();
+    rows
+}
+
+/// Upserts the formatting mode for `app_name`. The CHECK constraint rejects any
+/// mode other than `prompt_engineer` or `style` at the SQLite layer.
+pub fn set_app_mode(
+    conn: &Connection,
+    app_name: &str,
+    mode: &str,
+    updated_at: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO app_mode_map (app_name, mode, updated_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(app_name) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at",
+        rusqlite::params![app_name, mode, updated_at],
+    )?;
+    Ok(())
+}
+
+/// Removes the override for `app_name`. Returns the number of rows removed.
+pub fn delete_app_mode(conn: &Connection, app_name: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM app_mode_map WHERE app_name = ?1",
+        rusqlite::params![app_name],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +517,9 @@ mod tests {
             recording_ms: 1000,
             engine: "Local".into(),
             app: app.map(str::to_string),
+            stt_ms: None,
+            format_ms: None,
+            inject_ms: None,
         }
     }
 
@@ -609,6 +707,106 @@ mod tests {
         assert_eq!(work.updated_at, 99);
         // Re-seeding on reopen must not clobber the edited tone (INSERT OR IGNORE).
         assert_eq!(cfg.contexts.len(), 4);
+    }
+
+    /// Builds a v1-shaped schema by hand (no timing columns, no app_mode_map)
+    /// and stamps user_version = 1, so `migrate` exercises the v1 -> v2 step.
+    fn build_v1_schema(conn: &Connection) {
+        migrate_v1(conn).unwrap();
+        set_user_version(conn, 1).unwrap();
+        assert_eq!(user_version(conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn migrate_v2_is_idempotent() {
+        let conn = open_in_memory().unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 2);
+        // Running migrate again on an up-to-date DB must not move the version.
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn migrate_v2_preserves_v1_rows_with_null_timings() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        build_v1_schema(&conn);
+        // A v1 history row lacks the timing columns entirely.
+        conn.execute(
+            "INSERT INTO history
+                (at, raw, formatted, word_count, duration_ms, recording_ms, engine, app)
+             VALUES (1, 'r', 'f', 1, 10, 100, 'Local', 'Mail')",
+            [],
+        )
+        .unwrap();
+
+        // Migrate to v2: the row must survive with NULL timings.
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
+
+        let rows = get_history(&conn, 10, None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].raw, "r");
+        assert_eq!(rows[0].stt_ms, None);
+        assert_eq!(rows[0].format_ms, None);
+        assert_eq!(rows[0].inject_ms, None);
+    }
+
+    #[test]
+    fn app_mode_map_seeds_eleven_defaults() {
+        let conn = open_in_memory().unwrap();
+        let map = list_app_mode_map(&conn).unwrap();
+        assert_eq!(map.len(), 11, "expected 11 seeded apps, got {map:?}");
+        assert!(map.iter().all(|(_, mode)| mode == "prompt_engineer"));
+        let names: Vec<&str> = map.iter().map(|(n, _)| n.as_str()).collect();
+        for expected in [
+            "Terminal",
+            "iTerm2",
+            "Warp",
+            "Ghostty",
+            "Visual Studio Code",
+            "Cursor",
+            "Windsurf",
+            "Zed",
+            "Xcode",
+            "Claude",
+            "ChatGPT",
+        ] {
+            assert!(names.contains(&expected), "missing seed: {expected}");
+        }
+    }
+
+    #[test]
+    fn history_timing_columns_roundtrip() {
+        let conn = open_in_memory().unwrap();
+        let mut row = sample(1, Some("Warp"));
+        row.stt_ms = Some(120);
+        row.format_ms = Some(80);
+        row.inject_ms = Some(15);
+        insert_history(&conn, &row).unwrap();
+
+        let got = &get_history(&conn, 10, None).unwrap()[0];
+        assert_eq!(got.stt_ms, Some(120));
+        assert_eq!(got.format_ms, Some(80));
+        assert_eq!(got.inject_ms, Some(15));
+    }
+
+    #[test]
+    fn app_mode_map_check_rejects_invalid_mode() {
+        let conn = open_in_memory().unwrap();
+        assert!(
+            set_app_mode(&conn, "Slack", "bogus", 1).is_err(),
+            "CHECK must reject an unknown mode"
+        );
+        set_app_mode(&conn, "Slack", "style", 2).unwrap();
+        set_app_mode(&conn, "Slack", "prompt_engineer", 3).unwrap();
+        let slack = list_app_mode_map(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|(n, _)| n == "Slack")
+            .unwrap();
+        assert_eq!(slack.1, "prompt_engineer", "upsert must overwrite the mode");
+        assert_eq!(delete_app_mode(&conn, "Slack").unwrap(), 1);
     }
 
     #[test]

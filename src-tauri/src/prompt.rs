@@ -51,7 +51,7 @@ pub fn stt_initial_prompt(terms: &[String]) -> Option<String> {
     }
 }
 
-/// The four supported formatter tones.
+/// The three supported formatter tones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Formal,
@@ -66,6 +66,19 @@ pub enum Context {
     Work,
     Email,
     Other,
+}
+
+/// How the formatter should rewrite the transcript.
+///
+/// * [`Mode::Style`] is the default dictation pass: clean the transcript and
+///   apply the optional tone/context register (identical to the pre-parity
+///   `Option<(Tone, Context)>` argument).
+/// * [`Mode::PromptEngineer`] restructures a raw dictation into a well-formed
+///   AI prompt — used for developer/AI apps that expect prompt text, not prose.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Mode {
+    Style(Option<(Tone, Context)>),
+    PromptEngineer,
 }
 
 /// Composes one register-override fragment from a tone header, a context noun,

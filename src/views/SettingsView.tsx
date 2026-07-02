@@ -3,15 +3,28 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
+  AppModeEntry,
   DownloadProgress,
   ModelStatus,
   Settings as SettingsModel,
+  UpdateInfo,
 } from "../types";
+import {
+  checkForUpdate,
+  deleteAppMode,
+  getAppModeMap,
+  setAppMode,
+} from "../lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { Tabs } from "../components/ui/Tabs";
 import { Spinner } from "../components/ui/Spinner";
+
+const APP_MODES = [
+  { value: "prompt_engineer" as const, label: "Prompt Engineer" },
+  { value: "style" as const, label: "Default style" },
+];
 
 const LANGUAGES = [
   { value: "auto", label: "Auto-detect" },
@@ -63,8 +76,21 @@ export function SettingsView() {
   const [error, setError] = useState<string>("");
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  const [appModes, setAppModes] = useState<AppModeEntry[]>([]);
+  const [newAppName, setNewAppName] = useState("");
+  const [newAppMode, setNewAppMode] =
+    useState<AppModeEntry["mode"]>("prompt_engineer");
+
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [upToDate, setUpToDate] = useState(false);
+
   const refreshModels = useCallback(() => {
     invoke<ModelStatus[]>("list_models").then(setModels).catch(console.error);
+  }, []);
+
+  const refreshAppModes = useCallback(() => {
+    getAppModeMap().then(setAppModes).catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -73,6 +99,7 @@ export function SettingsView() {
       .then(setAccessibility)
       .catch(console.error);
     refreshModels();
+    refreshAppModes();
 
     // While the permission is missing, poll so the banner clears itself the
     // moment the user flips the toggle in System Settings — the grant
@@ -99,7 +126,41 @@ export function SettingsView() {
       clearInterval(poll);
       void unlistenProgress.then((fn) => fn());
     };
-  }, [refreshModels]);
+  }, [refreshModels, refreshAppModes]);
+
+  const addAppMode = () => {
+    const name = newAppName.trim();
+    if (!name) return;
+    setAppMode(name, newAppMode)
+      .then(() => {
+        setNewAppName("");
+        refreshAppModes();
+      })
+      .catch((err) => setError(String(err)));
+  };
+
+  const removeAppMode = (appName: string) => {
+    deleteAppMode(appName)
+      .then(refreshAppModes)
+      .catch((err) => setError(String(err)));
+  };
+
+  const runUpdateCheck = () => {
+    setChecking(true);
+    setUpToDate(false);
+    setUpdateInfo(null);
+    checkForUpdate()
+      .then((info) => {
+        if (info) {
+          setUpdateInfo(info);
+        } else {
+          setUpToDate(true);
+          setTimeout(() => setUpToDate(false), 4000);
+        }
+      })
+      .catch((err) => setError(String(err)))
+      .finally(() => setChecking(false));
+  };
 
   const update = (patch: Partial<SettingsModel>) => {
     setSettings((prev) => {
@@ -379,6 +440,176 @@ export function SettingsView() {
                 combos — they can clash with the synthesized ⌘V paste.
               </p>
             </Field>
+          </CardContent>
+        </Card>
+
+        {/* Quick clean ----------------------------------------------------- */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Quick clean</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-5">
+            <p className="text-[13px] leading-relaxed text-muted">
+              Skip the LLM for very short dictations and just tidy the raw
+              transcript — faster for one-liners.
+            </p>
+            <Field>
+              <label className="flex cursor-pointer items-center gap-2.5 text-[13.5px] text-text">
+                <input
+                  type="checkbox"
+                  className="accent-accent"
+                  checked={settings.quick_clean_enabled}
+                  onChange={(e) =>
+                    update({ quick_clean_enabled: e.target.checked })
+                  }
+                />
+                <span>Enable quick clean for short dictations</span>
+              </label>
+            </Field>
+            {settings.quick_clean_enabled && (
+              <Field>
+                <FieldLabel>Max words</FieldLabel>
+                <Input
+                  type="number"
+                  min={3}
+                  max={50}
+                  value={settings.quick_clean_max_words}
+                  onChange={(e) => {
+                    const n = Number.parseInt(e.target.value, 10);
+                    if (Number.isNaN(n)) return;
+                    update({
+                      quick_clean_max_words: Math.min(50, Math.max(3, n)),
+                    });
+                  }}
+                  className="w-28"
+                />
+                <p className="text-[12.5px] leading-relaxed text-muted">
+                  Dictations below this word count skip the formatter
+                  (3–50).
+                </p>
+              </Field>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Prompt Engineer apps ------------------------------------------- */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Prompt Engineer apps</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-5">
+            <p className="text-[13px] leading-relaxed text-muted">
+              Override the formatting mode per app. Names must match the macOS
+              app name exactly (e.g.{" "}
+              <code className="rounded bg-bg px-1.5 py-0.5 text-[12px] text-text">
+                Cursor
+              </code>
+              ).
+            </p>
+            {appModes.length > 0 && (
+              <ul className="flex flex-col divide-y divide-border rounded-[var(--radius)] border border-border">
+                {appModes.map((entry) => (
+                  <li
+                    key={entry.app_name}
+                    className="flex items-center justify-between gap-3 px-3 py-2.5"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[13.5px] text-text">
+                      {entry.app_name}
+                    </span>
+                    <span className="text-[12.5px] text-muted">
+                      {APP_MODES.find((m) => m.value === entry.mode)?.label ??
+                        entry.mode}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => removeAppMode(entry.app_name)}
+                    >
+                      Remove
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="flex items-end gap-2">
+              <Field>
+                <FieldLabel>App name</FieldLabel>
+                <Input
+                  value={newAppName}
+                  onChange={(e) => setNewAppName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") addAppMode();
+                  }}
+                  placeholder="Cursor"
+                />
+              </Field>
+              <Field>
+                <FieldLabel>Mode</FieldLabel>
+                <select
+                  value={newAppMode}
+                  onChange={(e) =>
+                    setNewAppMode(e.target.value as AppModeEntry["mode"])
+                  }
+                  className="h-10 rounded-[var(--radius)] border border-border bg-surface px-3 text-sm text-text outline-none transition-colors duration-150 focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/30"
+                >
+                  {APP_MODES.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Button onClick={addAppMode} disabled={!newAppName.trim()}>
+                Add
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Updates --------------------------------------------------------- */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Updates</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="flex items-center gap-3">
+              <Button variant="ghost" onClick={runUpdateCheck} disabled={checking}>
+                {checking ? "Checking…" : "Check for updates"}
+              </Button>
+              {upToDate && (
+                <span className="text-[13px] text-muted">
+                  You&rsquo;re up to date.
+                </span>
+              )}
+            </div>
+            {updateInfo && (
+              <div className="flex flex-col gap-3 rounded-[var(--radius)] border border-accent/30 bg-accent-soft px-4 py-3">
+                <p className="text-[13.5px] font-medium text-text">
+                  Flow {updateInfo.version} is available.
+                </p>
+                {updateInfo.notes && (
+                  <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-muted">
+                    {updateInfo.notes}
+                  </p>
+                )}
+                <div>
+                  <Button
+                    onClick={() => {
+                      void openUrl(updateInfo.url);
+                    }}
+                  >
+                    Download
+                  </Button>
+                </div>
+                <p className="text-[12.5px] leading-relaxed text-muted">
+                  After downloading, re-run the Gatekeeper workaround (
+                  <code className="rounded bg-bg px-1.5 py-0.5 text-[12px] text-text">
+                    xattr -cr
+                  </code>{" "}
+                  on the app) before opening the new build.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

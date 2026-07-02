@@ -286,6 +286,27 @@ fn resolve_mode(
     prompt::Mode::Style(parse_style(style))
 }
 
+/// Decides whether a dictation can skip the LLM formatter and use the fast
+/// rule-based quick-clean instead.
+///
+/// Only [`prompt::Mode::Style`] is eligible — a `PromptEngineer` dictation must
+/// always reach the model, so this returns `None` for it regardless of length or
+/// settings. For style dictations the decision is delegated to
+/// [`quickclean::try_quick_clean`], which returns `None` when quick-clean is
+/// disabled, the text is too long, or it carries list/command markers.
+/// `Some(cleaned)` means "bypass the formatter and use this text".
+fn quick_clean_bypass(
+    mode: &prompt::Mode,
+    transcript: &str,
+    max_words: u32,
+    enabled: bool,
+) -> Option<String> {
+    if !matches!(mode, prompt::Mode::Style(_)) {
+        return None;
+    }
+    quickclean::try_quick_clean(transcript, max_words, enabled)
+}
+
 fn stop_and_process(app: &AppHandle) {
     let state = app.state::<AppState>();
     let samples = {
@@ -330,7 +351,10 @@ fn stop_and_process(app: &AppHandle) {
         // STT bias from the user's vocabulary terms. Zero terms => None => an
         // unbiased transcription identical to before management-ui.
         let bias = prompt::stt_initial_prompt(&cfg.dict_terms);
-        match stt::transcribe(&whisper, &settings, bias.as_deref(), padded).await {
+        let stt_started = Instant::now();
+        let stt_result = stt::transcribe(&whisper, &settings, bias.as_deref(), padded).await;
+        let stt_ms = stt_started.elapsed().as_millis() as i64;
+        match stt_result {
             Ok(raw) if raw.is_empty() => {
                 emit_state(&app, "idle", "");
                 hide_overlay(&app);
@@ -342,14 +366,29 @@ fn stop_and_process(app: &AppHandle) {
                 // applies to that raw text below.
                 let mode =
                     resolve_mode(pending_app_name.as_deref(), &cfg.app_mode_map, &cfg.style);
-                let formatted =
-                    format::format(&settings, &raw, &cfg.dict_terms, &mode).await;
+                // Style dictations short enough for quick-clean skip the LLM
+                // entirely; prompt-engineer dictations always reach the model.
+                // Either way `format_ms` measures the whole formatting stage.
+                let format_started = Instant::now();
+                let formatted = match quick_clean_bypass(
+                    &mode,
+                    &raw,
+                    settings.quick_clean_max_words,
+                    settings.quick_clean_enabled,
+                ) {
+                    Some(cleaned) => cleaned,
+                    None => format::format(&settings, &raw, &cfg.dict_terms, &mode).await,
+                };
+                let format_ms = format_started.elapsed().as_millis() as i64;
                 // Deterministic replacements + snippet expansion run on the
-                // final text (LLM output or raw fallback alike).
+                // final text (LLM output or quick-clean output alike).
                 let final_text =
                     postprocess::apply(&formatted, &cfg.replacements, &cfg.snippets);
 
-                if let Err(err) = inject_on_main_thread(&app, final_text.clone()).await {
+                let inject_started = Instant::now();
+                let inject_result = inject_on_main_thread(&app, final_text.clone()).await;
+                let inject_ms = inject_started.elapsed().as_millis() as i64;
+                if let Err(err) = inject_result {
                     log::error!("injection failed: {err:#}");
                     emit_state(&app, "error", format!("Paste failed: {err}"));
                 } else {
@@ -368,10 +407,9 @@ fn stop_and_process(app: &AppHandle) {
                     recording_ms,
                     engine: format!("{:?}", settings.stt_engine),
                     app: pending_app,
-                    // Per-stage timings are wired in a later batch.
-                    stt_ms: None,
-                    format_ms: None,
-                    inject_ms: None,
+                    stt_ms: Some(stt_ms),
+                    format_ms: Some(format_ms),
+                    inject_ms: Some(inject_ms),
                 };
                 let row = {
                     let conn = state.db.lock().unwrap();
@@ -947,6 +985,44 @@ mod tests {
             .app_mode_map
             .iter()
             .any(|(name, _)| name == "Visual Studio Code"));
+    }
+
+    #[test]
+    fn quick_clean_bypass_prompt_engineer_never_bypasses() {
+        // Even a short, enabled, marker-free transcript must still reach the LLM
+        // when the resolved mode is prompt-engineer.
+        assert_eq!(
+            quick_clean_bypass(&prompt::Mode::PromptEngineer, "send the report", 12, true),
+            None
+        );
+    }
+
+    #[test]
+    fn quick_clean_bypass_style_bypasses_when_short_and_enabled() {
+        let mode = prompt::Mode::Style(Some((prompt::Tone::Casual, prompt::Context::Personal)));
+        assert_eq!(
+            quick_clean_bypass(&mode, "send the report tomorrow", 12, true),
+            Some("Send the report tomorrow.".to_string())
+        );
+    }
+
+    #[test]
+    fn quick_clean_bypass_style_does_not_bypass_when_disabled() {
+        let mode = prompt::Mode::Style(None);
+        assert_eq!(
+            quick_clean_bypass(&mode, "send the report tomorrow", 12, false),
+            None
+        );
+    }
+
+    #[test]
+    fn quick_clean_bypass_style_does_not_bypass_with_markers() {
+        // List/command markers force the LLM path even for short style text.
+        let mode = prompt::Mode::Style(None);
+        assert_eq!(
+            quick_clean_bypass(&mode, "first buy milk second buy eggs", 20, true),
+            None
+        );
     }
 
     #[test]

@@ -46,3 +46,9 @@ export interface OverlayState {
   state: "idle" | "recording" | "processing" | "error";
   message: string;
 }
+
+/** Mirrors `AppModeEntry` in lib.rs. A per-app formatting-mode override. */
+export interface AppModeEntry {
+  app_name: string;
+  mode: "prompt_engineer" | "style";
+}

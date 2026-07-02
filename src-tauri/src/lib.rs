@@ -47,6 +47,10 @@ struct PipelineConfig {
     snippets: Vec<(String, String)>,
     /// `(active_context, tone)` driving the formatter's style fragment.
     style: (String, String),
+    /// `(app_name, mode)` per-app formatting overrides. `mode` is
+    /// `prompt_engineer` or `style`; anything absent falls back to the style
+    /// pass. Drives [`resolve_mode`] on the hot path.
+    app_mode_map: Vec<(String, String)>,
 }
 
 /// Rebuilds the [`PipelineConfig`] snapshot from the database. Called at
@@ -85,11 +89,14 @@ fn rebuild_pipeline_cfg(conn: &rusqlite::Connection) -> rusqlite::Result<Pipelin
         .map(|c| c.tone.clone())
         .unwrap_or_else(|| "casual".to_string());
 
+    let app_mode_map = db::list_app_mode_map(conn)?;
+
     Ok(PipelineConfig {
         dict_terms,
         replacements,
         snippets,
         style: (active, tone),
+        app_mode_map,
     })
 }
 
@@ -258,6 +265,27 @@ fn parse_style(style: &(String, String)) -> Option<(prompt::Tone, prompt::Contex
     Some((tone, context))
 }
 
+/// Resolves the formatting [`prompt::Mode`] for a dictation from the frontmost
+/// app. When the frontmost app carries a `prompt_engineer` override in `map`,
+/// the dictation is restructured as an AI prompt; every other case — a `style`
+/// override, an unmapped app, or an unknown frontmost app (`None`) — falls back
+/// to the active style pass. The lookup matches the app's localized name against
+/// the `app_mode_map` keys exactly (the seed keys use their canonical spelling).
+fn resolve_mode(
+    pending_app: Option<&str>,
+    map: &[(String, String)],
+    style: &(String, String),
+) -> prompt::Mode {
+    if let Some(app) = pending_app {
+        if let Some((_, mode)) = map.iter().find(|(name, _)| name == app) {
+            if mode == "prompt_engineer" {
+                return prompt::Mode::PromptEngineer;
+            }
+        }
+    }
+    prompt::Mode::Style(parse_style(style))
+}
+
 fn stop_and_process(app: &AppHandle) {
     let state = app.state::<AppState>();
     let samples = {
@@ -289,6 +317,10 @@ fn stop_and_process(app: &AppHandle) {
         let whisper = Arc::clone(&state.whisper);
         // Snapshot the durable pipeline config once for this dictation.
         let cfg = state.pipeline_cfg.lock().unwrap().clone();
+        // Snapshot (without consuming) the frontmost app captured at hotkey
+        // press so per-app mode resolution can run before formatting. The
+        // authoritative `.take()` still happens at the history write below.
+        let pending_app_name = state.pending_app.lock().unwrap().clone();
 
         let mut padded = samples;
         if padded.len() < MIN_WHISPER_SAMPLES {
@@ -308,7 +340,8 @@ fn stop_and_process(app: &AppHandle) {
                 // (prompt fragment + example turns). On any formatter failure
                 // `format` returns the raw transcript — expansion still
                 // applies to that raw text below.
-                let mode = prompt::Mode::Style(parse_style(&cfg.style));
+                let mode =
+                    resolve_mode(pending_app_name.as_deref(), &cfg.app_mode_map, &cfg.style);
                 let formatted =
                     format::format(&settings, &raw, &cfg.dict_terms, &mode).await;
                 // Deterministic replacements + snippet expansion run on the
@@ -580,6 +613,56 @@ fn set_active_context(state: tauri::State<AppState>, context: String) -> Result<
     Ok(())
 }
 
+// ---- app mode map ----
+
+/// One per-app formatting-mode override. `mode` is `prompt_engineer` or
+/// `style`. Mirrors the `(app_name, mode)` pairs from [`db::list_app_mode_map`]
+/// as a named struct for the frontend.
+#[derive(Serialize)]
+struct AppModeEntry {
+    app_name: String,
+    mode: String,
+}
+
+#[tauri::command]
+fn get_app_mode_map(state: tauri::State<AppState>) -> Result<Vec<AppModeEntry>, String> {
+    let conn = state.db.lock().unwrap();
+    let rows = db::list_app_mode_map(&conn).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(app_name, mode)| AppModeEntry { app_name, mode })
+        .collect())
+}
+
+#[tauri::command]
+fn set_app_mode(
+    state: tauri::State<AppState>,
+    app_name: String,
+    mode: String,
+) -> Result<(), String> {
+    // Validate before touching SQLite so the error message is clear; the DB
+    // CHECK constraint is the backstop.
+    if mode != "prompt_engineer" && mode != "style" {
+        return Err(format!("invalid mode '{mode}': expected prompt_engineer or style"));
+    }
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_app_mode(&conn, &app_name, &mode, now_ms()).map_err(|e| e.to_string())?;
+    }
+    refresh_pipeline_cfg(&state);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_app_mode(state: tauri::State<AppState>, app_name: String) -> Result<(), String> {
+    {
+        let conn = state.db.lock().unwrap();
+        db::delete_app_mode(&conn, &app_name).map_err(|e| e.to_string())?;
+    }
+    refresh_pipeline_cfg(&state);
+    Ok(())
+}
+
 /// Current Unix epoch milliseconds — the `created_at` / `updated_at` stamp the
 /// DB rows expect.
 fn now_ms() -> i64 {
@@ -642,6 +725,9 @@ pub fn run() {
             get_style,
             set_style,
             set_active_context,
+            get_app_mode_map,
+            set_app_mode,
+            delete_app_mode,
         ])
         .setup(|app| {
             // Tray icon with a minimal menu — Flow lives in the menu bar.
@@ -796,5 +882,98 @@ mod tests {
         assert!(cfg.snippets.is_empty());
         // Seeded defaults: personal context, casual tone.
         assert_eq!(cfg.style, ("personal".to_string(), "casual".to_string()));
+    }
+
+    fn pe_map() -> Vec<(String, String)> {
+        vec![
+            ("Warp".to_string(), "prompt_engineer".to_string()),
+            ("Mail".to_string(), "style".to_string()),
+        ]
+    }
+
+    #[test]
+    fn resolve_mode_mapped_prompt_engineer() {
+        let style = ("work".to_string(), "formal".to_string());
+        let mode = resolve_mode(Some("Warp"), &pe_map(), &style);
+        assert_eq!(mode, prompt::Mode::PromptEngineer);
+    }
+
+    #[test]
+    fn resolve_mode_mapped_style_uses_active_style() {
+        // An app explicitly mapped to `style` resolves to the parsed style pass.
+        let style = ("work".to_string(), "formal".to_string());
+        let mode = resolve_mode(Some("Mail"), &pe_map(), &style);
+        assert_eq!(
+            mode,
+            prompt::Mode::Style(Some((prompt::Tone::Formal, prompt::Context::Work)))
+        );
+    }
+
+    #[test]
+    fn resolve_mode_unmapped_app_falls_back_to_style() {
+        let style = ("personal".to_string(), "casual".to_string());
+        let mode = resolve_mode(Some("Slack"), &pe_map(), &style);
+        assert_eq!(
+            mode,
+            prompt::Mode::Style(Some((prompt::Tone::Casual, prompt::Context::Personal)))
+        );
+    }
+
+    #[test]
+    fn resolve_mode_none_app_falls_back_to_style() {
+        // No frontmost app captured -> style pass, never prompt-engineer.
+        let style = ("email".to_string(), "very_casual".to_string());
+        let mode = resolve_mode(None, &pe_map(), &style);
+        assert_eq!(
+            mode,
+            prompt::Mode::Style(Some((prompt::Tone::VeryCasual, prompt::Context::Email)))
+        );
+    }
+
+    #[test]
+    fn rebuild_pipeline_cfg_includes_seeded_app_mode_map() {
+        let conn = db::open_in_memory().unwrap();
+        let cfg = rebuild_pipeline_cfg(&conn).unwrap();
+        assert_eq!(
+            cfg.app_mode_map.len(),
+            11,
+            "the 11 prompt-engineer seeds must flow into the snapshot"
+        );
+        assert!(cfg
+            .app_mode_map
+            .iter()
+            .all(|(_, mode)| mode == "prompt_engineer"));
+        assert!(cfg
+            .app_mode_map
+            .iter()
+            .any(|(name, _)| name == "Visual Studio Code"));
+    }
+
+    #[test]
+    fn app_mode_map_set_and_delete_reflect_in_fresh_rebuild() {
+        let conn = db::open_in_memory().unwrap();
+        // Add a new override and confirm the next snapshot sees it.
+        db::set_app_mode(&conn, "Slack", "prompt_engineer", 1).unwrap();
+        let cfg = rebuild_pipeline_cfg(&conn).unwrap();
+        assert_eq!(
+            resolve_mode(
+                Some("Slack"),
+                &cfg.app_mode_map,
+                &("personal".to_string(), "casual".to_string())
+            ),
+            prompt::Mode::PromptEngineer
+        );
+
+        // Delete it and confirm a fresh snapshot no longer resolves to PE.
+        db::delete_app_mode(&conn, "Slack").unwrap();
+        let cfg = rebuild_pipeline_cfg(&conn).unwrap();
+        assert_eq!(
+            resolve_mode(
+                Some("Slack"),
+                &cfg.app_mode_map,
+                &("personal".to_string(), "casual".to_string())
+            ),
+            prompt::Mode::Style(Some((prompt::Tone::Casual, prompt::Context::Personal)))
+        );
     }
 }

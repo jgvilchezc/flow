@@ -5,7 +5,7 @@
  * (Tauri camelCases Rust snake_case args at the JS boundary).
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { HistoryEntry } from "../types";
+import type { AppModeEntry, HistoryEntry } from "../types";
 
 // ---------------------------------------------------------------------------
 // Types — mirror the Rust serde structs exactly.
@@ -136,4 +136,23 @@ export function setStyle(
 
 export function setActiveContext(context: StyleContextKey): Promise<void> {
   return invoke("set_active_context", { context });
+}
+
+// ---------------------------------------------------------------------------
+// App mode map (per-app formatting overrides)
+// ---------------------------------------------------------------------------
+
+export function getAppModeMap(): Promise<AppModeEntry[]> {
+  return invoke<AppModeEntry[]>("get_app_mode_map");
+}
+
+export function setAppMode(
+  appName: string,
+  mode: "prompt_engineer" | "style",
+): Promise<void> {
+  return invoke("set_app_mode", { appName, mode });
+}
+
+export function deleteAppMode(appName: string): Promise<void> {
+  return invoke("delete_app_mode", { appName });
 }

@@ -11,6 +11,7 @@ mod quickclean;
 mod settings;
 mod stats;
 mod stt;
+mod update;
 
 use serde::Serialize;
 use settings::Settings;
@@ -766,6 +767,7 @@ pub fn run() {
             get_app_mode_map,
             set_app_mode,
             delete_app_mode,
+            update::check_for_update,
         ])
         .setup(|app| {
             // Tray icon with a minimal menu — Flow lives in the menu bar.
@@ -834,6 +836,19 @@ pub fn run() {
                     }
                 });
             }
+
+            // Best-effort update check. It sleeps first so it never competes
+            // with the model load on startup, then emits
+            // `flow://update-available` (consumed by the frontend) only when a
+            // strictly newer release exists. All failures are silent.
+            let update_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let current = update_handle.package_info().version.to_string();
+                if let Some(info) = update::fetch_latest(&current).await {
+                    let _ = update_handle.emit("flow://update-available", info);
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

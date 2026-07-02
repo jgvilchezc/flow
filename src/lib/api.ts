@@ -5,7 +5,7 @@
  * (Tauri camelCases Rust snake_case args at the JS boundary).
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { AppModeEntry, HistoryEntry } from "../types";
+import type { AppModeEntry, HistoryEntry, UpdateInfo } from "../types";
 
 // ---------------------------------------------------------------------------
 // Types — mirror the Rust serde structs exactly.
@@ -155,4 +155,13 @@ export function setAppMode(
 
 export function deleteAppMode(appName: string): Promise<void> {
   return invoke("delete_app_mode", { appName });
+}
+
+// ---------------------------------------------------------------------------
+// Update check
+// ---------------------------------------------------------------------------
+
+/** Returns the latest release when newer than the running build, else `null`. */
+export function checkForUpdate(): Promise<UpdateInfo | null> {
+  return invoke<UpdateInfo | null>("check_for_update");
 }

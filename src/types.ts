@@ -52,3 +52,13 @@ export interface AppModeEntry {
   app_name: string;
   mode: "prompt_engineer" | "style";
 }
+
+/**
+ * Mirrors `update::UpdateInfo`. Payload of the `flow://update-available` event
+ * and the `check_for_update` command result.
+ */
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  notes: string | null;
+}

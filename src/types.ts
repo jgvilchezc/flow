@@ -10,6 +10,8 @@ export interface Settings {
   groq_api_key: string;
   groq_llm_model: string;
   hotkey: string;
+  quick_clean_enabled: boolean;
+  quick_clean_max_words: number;
 }
 
 export interface ModelStatus {

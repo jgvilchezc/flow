@@ -1,6 +1,6 @@
 [package]
 name = "flow"
-version = "0.1.0"
+version = "0.2.0"
 description = "Free, local-first voice dictation for macOS (Wispr Flow style)"
 authors = ["Jose Gabriel Vilchez"]
 edition = "2021"

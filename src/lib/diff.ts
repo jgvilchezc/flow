@@ -106,3 +106,12 @@ export function wordDiff(raw: string, formatted: string): DiffSegment[] {
   }
   return segments;
 }
+
+/**
+ * Number of non-equal segments between `raw` and `formatted` — the count the
+ * overlay's post-dictation card shows as "{n} Changes". Zero means the
+ * formatter left the text untouched, in which case the card is skipped.
+ */
+export function changeCount(raw: string, formatted: string): number {
+  return wordDiff(raw, formatted).filter((s) => s.type !== "equal").length;
+}

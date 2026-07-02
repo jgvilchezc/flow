@@ -50,6 +50,21 @@ export interface HistoryEntry {
 export interface OverlayState {
   state: "idle" | "recording" | "processing" | "error";
   message: string;
+  // Present only on the `recording` state — the resolved formatting mode so the
+  // pill can show "Prompt Engineer" instead of "Listening". Omitted otherwise.
+  mode?: "prompt_engineer" | "style";
+}
+
+/**
+ * Mirrors `OverlayResult` in lib.rs. Payload of the `flow://result` event — the
+ * post-dictation "changes" card, emitted only when the formatter changed the
+ * transcript.
+ */
+export interface OverlayResult {
+  raw: string;
+  formatted: string;
+  mode: "prompt_engineer" | "style";
+  app: string | null;
 }
 
 /** Mirrors `AppModeEntry` in lib.rs. A per-app formatting-mode override. */

@@ -7,7 +7,7 @@
 //   node --experimental-strip-types scripts/diff_test.mjs
 //
 // (the flag is a harmless no-op on versions where stripping is already on).
-import { wordDiff } from "../src/lib/diff.ts";
+import { wordDiff, changeCount } from "../src/lib/diff.ts";
 
 let failures = 0;
 function check(label, cond) {
@@ -102,6 +102,21 @@ function invariants(label, raw, formatted) {
   );
   check("insertion: has add", segs.some((s) => s.type === "add"));
   check("insertion: has equal", segs.some((s) => s.type === "equal"));
+}
+
+// 8. changeCount powers the overlay card's "{n} Changes" header and its
+// skip-when-unchanged guard, so it must count exactly the non-equal segments.
+{
+  check("changeCount: identical is 0", changeCount("hello world", "hello world") === 0);
+  check("changeCount: both empty is 0", changeCount("", "") === 0);
+  check("changeCount: pure add is 1", changeCount("", "hello world") === 1);
+  check("changeCount: pure remove is 1", changeCount("hello world", "") === 1);
+  const raw = "Así que revisa todos los cambios";
+  const formatted = "Revisa todos los cambios";
+  const segChanges = wordDiff(raw, formatted).filter((s) => s.type !== "equal")
+    .length;
+  check("changeCount: mixed matches non-equal segments", changeCount(raw, formatted) === segChanges);
+  check("changeCount: mixed is at least 1", changeCount(raw, formatted) >= 1);
 }
 
 if (failures > 0) {

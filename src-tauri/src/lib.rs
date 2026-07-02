@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const MIN_RECORDING_SECS: f32 = 0.3;
@@ -30,6 +30,23 @@ const MIN_WHISPER_SAMPLES: usize = (audio::WHISPER_SAMPLE_RATE as usize * 12) / 
 struct OverlayState {
     state: &'static str,
     message: String,
+    /// The resolved formatting mode label for a `recording` state
+    /// (`prompt_engineer` | `style`), so the pill can show "Prompt Engineer"
+    /// instead of "Listening". `None` (and omitted from the payload) for every
+    /// non-recording state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<&'static str>,
+}
+
+/// Payload of the `flow://result` event — the post-dictation "changes" card.
+/// Emitted only when the formatter actually changed the transcript, so the
+/// overlay can show a Wispr-style diff of what was polished.
+#[derive(Clone, Serialize)]
+struct OverlayResult {
+    raw: String,
+    formatted: String,
+    mode: &'static str,
+    app: Option<String>,
 }
 
 /// The slice of durable configuration the dictation pipeline needs on every
@@ -143,11 +160,24 @@ fn open_database() -> rusqlite::Connection {
 }
 
 fn emit_state(app: &AppHandle, state: &'static str, message: impl Into<String>) {
+    emit_state_full(app, state, message, None);
+}
+
+/// Emits `flow://state` with an optional `mode` label. Only the `recording`
+/// state carries a mode (`prompt_engineer` | `style`); everything else passes
+/// `None`, which is omitted from the serialized payload.
+fn emit_state_full(
+    app: &AppHandle,
+    state: &'static str,
+    message: impl Into<String>,
+    mode: Option<&'static str>,
+) {
     let _ = app.emit(
         "flow://state",
         OverlayState {
             state,
             message: message.into(),
+            mode,
         },
     );
 }
@@ -156,22 +186,45 @@ fn overlay_window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("overlay")
 }
 
+/// Resizes the overlay window. `resizable: false` in `tauri.conf.json` only
+/// blocks *user* resizing, but to keep programmatic resizes robust across
+/// platforms we briefly re-enable the flag around the call and restore it.
+fn set_overlay_size(window: &WebviewWindow, width: f64, height: f64) {
+    let _ = window.set_resizable(true);
+    let _ = window.set_size(LogicalSize::new(width, height));
+    let _ = window.set_resizable(false);
+}
+
+/// Restores the overlay to its compact pill geometry and re-enables
+/// click-through. Used both when a fresh dictation starts and when the
+/// post-dictation card is dismissed, so the window never lingers card-sized.
+fn restore_pill(window: &WebviewWindow) {
+    let _ = window.set_ignore_cursor_events(true);
+    set_overlay_size(window, 240.0, 56.0);
+}
+
 /// Pins the overlay bottom-center of the primary monitor so it floats above
 /// the dock like Flow's pill.
+fn position_overlay(window: &WebviewWindow) {
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let pos = monitor.position();
+        if let Ok(win_size) = window.outer_size() {
+            let x = pos.x + (size.width as i32 - win_size.width as i32) / 2;
+            let y = pos.y + size.height as i32 - win_size.height as i32 - (90.0 * scale) as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+    }
+}
+
+/// Shows the overlay as the compact pill. Always restores pill geometry and
+/// click-through first, so a pending dictation cleanly takes over from an open
+/// result card.
 fn show_overlay(app: &AppHandle) {
     if let Some(window) = overlay_window(app) {
-        if let Ok(Some(monitor)) = window.primary_monitor() {
-            let scale = monitor.scale_factor();
-            let size = monitor.size();
-            let pos = monitor.position();
-            if let Ok(win_size) = window.outer_size() {
-                let x = pos.x + (size.width as i32 - win_size.width as i32) / 2;
-                let y = pos.y + size.height as i32
-                    - win_size.height as i32
-                    - (90.0 * scale) as i32;
-                let _ = window.set_position(PhysicalPosition::new(x, y));
-            }
-        }
+        restore_pill(&window);
+        position_overlay(&window);
         let _ = window.show();
     }
 }
@@ -179,6 +232,49 @@ fn show_overlay(app: &AppHandle) {
 fn hide_overlay(app: &AppHandle) {
     if let Some(window) = overlay_window(app) {
         let _ = window.hide();
+    }
+}
+
+/// The label the overlay uses to distinguish a prompt-engineer dictation from a
+/// style one (drives the pill copy while listening and the card badge).
+fn mode_label(mode: &prompt::Mode) -> &'static str {
+    match mode {
+        prompt::Mode::PromptEngineer => "prompt_engineer",
+        prompt::Mode::Style(_) => "style",
+    }
+}
+
+/// The post-dictation card only appears when the formatter actually changed the
+/// text. Comparison is trimmed so trailing-whitespace-only differences (which
+/// the user can't see) never pop a redundant card.
+fn should_show_result_card(raw: &str, formatted: &str) -> bool {
+    raw.trim() != formatted.trim()
+}
+
+/// Grows the overlay into the result card, disables click-through so its
+/// buttons are usable, and emits `flow://result` with the diff payload. Keeps
+/// the window visible — the caller must NOT hide it.
+fn show_result_card(
+    app: &AppHandle,
+    raw: &str,
+    formatted: &str,
+    mode: &'static str,
+    app_name: Option<String>,
+) {
+    let _ = app.emit(
+        "flow://result",
+        OverlayResult {
+            raw: raw.to_string(),
+            formatted: formatted.to_string(),
+            mode,
+            app: app_name,
+        },
+    );
+    if let Some(window) = overlay_window(app) {
+        let _ = window.set_ignore_cursor_events(false);
+        set_overlay_size(&window, 460.0, 260.0);
+        position_overlay(&window);
+        let _ = window.show();
     }
 }
 
@@ -207,7 +303,19 @@ fn start_recording(app: &AppHandle) {
     *state.pending_app.lock().unwrap() = frontmost::frontmost_app_name();
     match recorder.start() {
         Ok(()) => {
-            emit_state(app, "recording", "");
+            // Resolve the formatting mode from the frontmost app so the pill can
+            // show "Prompt Engineer" while listening. Same inputs as the hot
+            // path's `resolve_mode`; reads only the cached config, never SQLite.
+            let label = {
+                let pending = state.pending_app.lock().unwrap();
+                let cfg = state.pipeline_cfg.lock().unwrap();
+                mode_label(&resolve_mode(
+                    pending.as_deref(),
+                    &cfg.app_mode_map,
+                    &cfg.style,
+                ))
+            };
+            emit_state_full(app, "recording", "", Some(label));
             show_overlay(app);
         }
         Err(err) => {
@@ -389,13 +497,34 @@ fn stop_and_process(app: &AppHandle) {
                 let inject_started = Instant::now();
                 let inject_result = inject_on_main_thread(&app, final_text.clone()).await;
                 let inject_ms = inject_started.elapsed().as_millis() as i64;
-                if let Err(err) = inject_result {
-                    log::error!("injection failed: {err:#}");
-                    emit_state(&app, "error", format!("Paste failed: {err}"));
-                } else {
-                    emit_state(&app, "idle", "");
+                match inject_result {
+                    Err(err) => {
+                        log::error!("injection failed: {err:#}");
+                        emit_state(&app, "error", format!("Paste failed: {err}"));
+                        hide_overlay(&app);
+                    }
+                    Ok(()) => {
+                        // Wispr Polish: when the formatter changed the text, keep
+                        // the overlay up as a diff card the user can inspect and
+                        // copy from; otherwise behave exactly as before.
+                        if should_show_result_card(&raw, &final_text) {
+                            show_result_card(
+                                &app,
+                                &raw,
+                                &final_text,
+                                mode_label(&mode),
+                                pending_app_name.clone(),
+                            );
+                            // Emit idle AFTER the result event; the frontend gives
+                            // the card priority over the idle pill state, so the
+                            // card is not clobbered.
+                            emit_state(&app, "idle", "");
+                        } else {
+                            emit_state(&app, "idle", "");
+                            hide_overlay(&app);
+                        }
+                    }
                 }
-                hide_overlay(&app);
 
                 let pending_app = state.pending_app.lock().unwrap().take();
                 let row = db::HistoryRow {
@@ -511,6 +640,18 @@ fn get_history(
     let limit = limit.unwrap_or(100) as i64;
     let conn = state.db.lock().unwrap();
     db::get_history(&conn, limit, before_at).map_err(|e| e.to_string())
+}
+
+/// Dismisses the post-dictation result card: hides the overlay and restores it
+/// to the compact, click-through pill geometry so the next dictation starts
+/// clean. Invoked by the overlay frontend (✕, auto-dismiss, or mouse-leave
+/// timeout).
+#[tauri::command]
+fn dismiss_overlay_result(app: AppHandle) {
+    if let Some(window) = overlay_window(&app) {
+        let _ = window.hide();
+        restore_pill(&window);
+    }
 }
 
 #[tauri::command]
@@ -751,6 +892,7 @@ pub fn run() {
             list_models,
             download_model,
             get_history,
+            dismiss_overlay_result,
             check_accessibility,
             request_accessibility,
             test_format,
@@ -1037,6 +1179,30 @@ mod tests {
         assert_eq!(
             quick_clean_bypass(&mode, "first buy milk second buy eggs", 20, true),
             None
+        );
+    }
+
+    #[test]
+    fn should_show_result_card_detects_real_changes() {
+        // A formatting change pops the card.
+        assert!(should_show_result_card("hello world", "Hello, world."));
+        // Identical text does not.
+        assert!(!should_show_result_card("hello world", "hello world"));
+        // Trailing-/leading-whitespace-only differences are invisible to the
+        // user, so they must not pop a redundant card.
+        assert!(!should_show_result_card("hello world", "  hello world  "));
+    }
+
+    #[test]
+    fn mode_label_maps_modes() {
+        assert_eq!(mode_label(&prompt::Mode::PromptEngineer), "prompt_engineer");
+        assert_eq!(mode_label(&prompt::Mode::Style(None)), "style");
+        assert_eq!(
+            mode_label(&prompt::Mode::Style(Some((
+                prompt::Tone::Casual,
+                prompt::Context::Personal
+            )))),
+            "style"
         );
     }
 

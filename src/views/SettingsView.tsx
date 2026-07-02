@@ -484,7 +484,7 @@ export function SettingsView() {
                   className="w-28"
                 />
                 <p className="text-[12.5px] leading-relaxed text-muted">
-                  Dictations at or below this word count skip the formatter
+                  Dictations below this word count skip the formatter
                   (3–50).
                 </p>
               </Field>

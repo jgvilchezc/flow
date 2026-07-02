@@ -51,7 +51,7 @@ pub fn stt_initial_prompt(terms: &[String]) -> Option<String> {
     }
 }
 
-/// The four supported formatter tones.
+/// The three supported formatter tones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Formal,

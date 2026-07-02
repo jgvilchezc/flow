@@ -17,12 +17,15 @@
 
 /// Single-word fillers safe to drop anywhere in the sentence. These are
 /// unambiguous hesitation sounds, not content words.
-const ANYWHERE_FILLERS: &[&str] = &["um", "uh", "uhm", "eh", "este"];
+const ANYWHERE_FILLERS: &[&str] = &["um", "uh", "uhm"];
 
 /// Single-word fillers only dropped when they *lead* the sentence — as real
 /// words ("so big", "make it like this") they carry meaning mid-sentence, so
-/// removing them there would corrupt the text.
-const LEADING_FILLERS: &[&str] = &["like", "so", "bueno", "pues"];
+/// removing them there would corrupt the text. "este" is the Spanish
+/// demonstrative "this" (a content word: "quiero este informe"), and "eh" is
+/// an interjection that is virtually always a leading hesitation; both are only
+/// safe to strip when they lead the sentence.
+const LEADING_FILLERS: &[&str] = &["like", "so", "bueno", "pues", "este", "eh"];
 
 /// Two-word fillers dropped anywhere.
 const MULTIWORD_FILLERS: &[[&str; 2]] = &[["you", "know"], ["o", "sea"]];
@@ -280,5 +283,43 @@ mod tests {
     #[test]
     fn fillers_only_input_returns_none() {
         assert_eq!(try_quick_clean("um uh you know", 12, true), None);
+    }
+
+    #[test]
+    fn interior_spanish_este_is_preserved() {
+        // "este" is the demonstrative "this" mid-sentence — a content word that
+        // must never be stripped, or "quiero este informe" corrupts to
+        // "quiero informe".
+        assert_eq!(
+            try_quick_clean("quiero este informe", 12, true),
+            Some("Quiero este informe.".to_string())
+        );
+        assert_eq!(
+            try_quick_clean("mandame este archivo", 12, true),
+            Some("Mandame este archivo.".to_string())
+        );
+    }
+
+    #[test]
+    fn leading_spanish_este_hesitation_is_stripped() {
+        // Leading "este" is a genuine Spanish hesitation and is still dropped.
+        assert_eq!(
+            try_quick_clean("este mandame el informe", 12, true),
+            Some("Mandame el informe.".to_string())
+        );
+    }
+
+    #[test]
+    fn interior_eh_is_preserved_leading_eh_is_stripped() {
+        // Interior "eh" now survives (leading-only semantics)...
+        assert_eq!(
+            try_quick_clean("mandame el informe eh mañana", 12, true),
+            Some("Mandame el informe eh mañana.".to_string())
+        );
+        // ...while a leading "eh" hesitation is still removed.
+        assert_eq!(
+            try_quick_clean("eh mandame el informe mañana", 12, true),
+            Some("Mandame el informe mañana.".to_string())
+        );
     }
 }

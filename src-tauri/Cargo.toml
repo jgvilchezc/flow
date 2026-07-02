@@ -34,7 +34,7 @@ hound = "3.5"
 rusqlite = { version = "0.40", features = ["bundled"] }
 chrono = "0.4"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSPasteboard"] }
 
 [profile.release]
 lto = true

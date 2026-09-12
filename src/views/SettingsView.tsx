@@ -71,6 +71,7 @@ function Field({ children }: { children: React.ReactNode }) {
 export function SettingsView() {
   const [settings, setSettings] = useState<SettingsModel | null>(null);
   const [models, setModels] = useState<ModelStatus[]>([]);
+  const [inputDevices, setInputDevices] = useState<string[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [accessibility, setAccessibility] = useState<boolean | null>(null);
   const [error, setError] = useState<string>("");
@@ -100,6 +101,9 @@ export function SettingsView() {
       .catch(console.error);
     refreshModels();
     refreshAppModes();
+    invoke<string[]>("list_input_devices")
+      .then(setInputDevices)
+      .catch(console.error);
 
     // While the permission is missing, poll so the banner clears itself the
     // moment the user flips the toggle in System Settings — the grant
@@ -308,6 +312,34 @@ export function SettingsView() {
                 </ul>
               </Field>
             )}
+
+            <Field>
+              <FieldLabel>Microphone</FieldLabel>
+              <select
+                value={settings.input_device ?? ""}
+                onChange={(e) =>
+                  update({
+                    input_device: e.target.value === "" ? null : e.target.value,
+                  })
+                }
+                className="h-10 w-full rounded-[var(--radius)] border border-border bg-surface px-3 text-sm text-text outline-none transition-colors duration-150 focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/30"
+              >
+                <option value="">System default</option>
+                {/* Keep a configured-but-unplugged device visible so the user
+                    can see (and clear) what is saved. */}
+                {settings.input_device &&
+                  !inputDevices.includes(settings.input_device) && (
+                    <option value={settings.input_device}>
+                      {settings.input_device} (not detected)
+                    </option>
+                  )}
+                {inputDevices.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            </Field>
 
             <Field>
               <FieldLabel>Language</FieldLabel>

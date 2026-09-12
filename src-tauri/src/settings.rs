@@ -47,6 +47,10 @@ pub struct Settings {
     /// dictations always go through the LLM formatter.
     #[serde(default = "default_quick_clean_max_words")]
     pub quick_clean_max_words: u32,
+    /// cpal device name to record from. `None` means the system default input,
+    /// which macOS may silently switch to a Continuity (iPhone) microphone.
+    #[serde(default)]
+    pub input_device: Option<String>,
 }
 
 fn default_quick_clean_enabled() -> bool {
@@ -70,6 +74,7 @@ impl Default for Settings {
             hotkey: "Alt+Space".into(),
             quick_clean_enabled: default_quick_clean_enabled(),
             quick_clean_max_words: default_quick_clean_max_words(),
+            input_device: None,
         }
     }
 }
@@ -137,5 +142,7 @@ mod tests {
         // New fields fall back to their field-level defaults.
         assert!(settings.quick_clean_enabled);
         assert_eq!(settings.quick_clean_max_words, 12);
+        // No `input_device` key means "use the system default".
+        assert_eq!(settings.input_device, None);
     }
 }

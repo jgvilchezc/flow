@@ -25,19 +25,29 @@ impl Recorder {
         }
     }
 
-    pub fn start(&mut self) -> Result<()> {
+    /// Starts capturing from the input device named `preferred_device_name`
+    /// when it exists, otherwise from the system default input.
+    pub fn start(&mut self, preferred_device_name: Option<&str>) -> Result<()> {
         if self.stream.is_some() {
             return Ok(());
         }
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("no input device available"))?;
+        let device = match preferred_device_name.and_then(|name| resolve_by_name(&host, name)) {
+            Some(device) => device,
+            None => host
+                .default_input_device()
+                .ok_or_else(|| anyhow!("no input device available"))?,
+        };
         let config = device
             .default_input_config()
             .context("failed to get default input config")?;
 
         self.source_rate = config.sample_rate().0;
+        log::info!(
+            "recording from {:?} at {} Hz",
+            device.name().unwrap_or_else(|_| "<unknown>".into()),
+            self.source_rate
+        );
         let channels = config.channels() as usize;
 
         let buffer = Arc::clone(&self.buffer);
@@ -86,12 +96,55 @@ impl Recorder {
     pub fn stop(&mut self) -> Vec<f32> {
         self.stream = None; // dropping the stream stops capture
         let samples = std::mem::take(&mut *self.buffer.lock().unwrap());
+        log::info!(
+            "captured {:.2}s at {} Hz, peak amplitude {:.4}",
+            samples.len() as f32 / self.source_rate as f32,
+            self.source_rate,
+            peak_amplitude(&samples)
+        );
         resample_linear(&samples, self.source_rate, WHISPER_SAMPLE_RATE)
     }
 
     pub fn is_recording(&self) -> bool {
         self.stream.is_some()
     }
+}
+
+/// Names of every input device cpal can see. Devices whose name cannot be
+/// read are skipped.
+pub fn list_input_devices() -> Vec<String> {
+    cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Looks up an input device by exact name, logging why the lookup failed so
+/// the fallback to the system default is diagnosable from the log alone.
+fn resolve_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
+    let devices = match host.input_devices() {
+        Ok(devices) => devices,
+        Err(err) => {
+            log::warn!("cannot enumerate input devices ({err}); falling back to system default");
+            return None;
+        }
+    };
+    let found = pick_by_name(devices.filter_map(|d| d.name().ok().map(|n| (n, d))), name);
+    if found.is_none() {
+        log::warn!("input device {name:?} not found; falling back to system default");
+    }
+    found
+}
+
+/// Picks the first device whose name equals `wanted`. Duplicate names (two
+/// identical USB mics) resolve to whichever cpal enumerates first.
+fn pick_by_name<T>(mut devices: impl Iterator<Item = (String, T)>, wanted: &str) -> Option<T> {
+    devices.find(|(name, _)| name == wanted).map(|(_, d)| d)
+}
+
+/// Largest absolute sample value; 0.0 for an empty slice.
+fn peak_amplitude(samples: &[f32]) -> f32 {
+    samples.iter().fold(0.0, |peak, s| peak.max(s.abs()))
 }
 
 fn push_mono(buffer: &Arc<Mutex<Vec<f32>>>, data: &[f32], channels: usize) {
@@ -122,4 +175,38 @@ fn resample_linear(input: &[f32], from: u32, to: u32) -> Vec<f32> {
             a + (b - a) * frac
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidates() -> Vec<(String, u8)> {
+        vec![
+            ("MacBook Pro Microphone".into(), 1),
+            ("iPhone Microphone".into(), 2),
+        ]
+    }
+
+    #[test]
+    fn pick_by_name_returns_exact_match() {
+        let picked = pick_by_name(candidates().into_iter(), "iPhone Microphone");
+        assert_eq!(picked, Some(2));
+    }
+
+    #[test]
+    fn pick_by_name_returns_none_when_no_device_matches() {
+        let picked = pick_by_name(candidates().into_iter(), "USB Mic");
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn peak_amplitude_of_empty_slice_is_zero() {
+        assert_eq!(peak_amplitude(&[]), 0.0);
+    }
+
+    #[test]
+    fn peak_amplitude_uses_absolute_value() {
+        assert_eq!(peak_amplitude(&[0.1, -0.8, 0.5]), 0.8);
+    }
 }

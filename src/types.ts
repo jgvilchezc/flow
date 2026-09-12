@@ -12,6 +12,8 @@ export interface Settings {
   hotkey: string;
   quick_clean_enabled: boolean;
   quick_clean_max_words: number;
+  /** cpal input device name; null means the system default microphone. */
+  input_device: string | null;
 }
 
 export interface ModelStatus {

@@ -151,8 +151,8 @@ fn open_database() -> rusqlite::Connection {
                 "failed to open database at {}: {err:#} — using in-memory fallback",
                 path.display()
             );
-            let conn = rusqlite::Connection::open_in_memory()
-                .expect("in-memory SQLite must always open");
+            let conn =
+                rusqlite::Connection::open_in_memory().expect("in-memory SQLite must always open");
             db::migrate(&conn).expect("in-memory migration must succeed");
             conn
         }
@@ -283,6 +283,9 @@ fn start_recording(app: &AppHandle) {
     if *state.processing.lock().unwrap() {
         return; // don't stack a new recording on top of an in-flight one
     }
+    // Snapshot the preferred mic BEFORE taking the recorder lock; settings is
+    // never locked while the recorder is held anywhere else, keep it that way.
+    let input_device = state.settings.lock().unwrap().input_device.clone();
     let mut recorder = state.recorder.lock().unwrap();
     if recorder.is_recording() {
         return; // key-repeat Pressed events while held
@@ -301,7 +304,7 @@ fn start_recording(app: &AppHandle) {
     // target app still owns the menu bar. The hotkey handler runs on the main
     // thread, satisfying AppKit's requirement. Failure is non-fatal.
     *state.pending_app.lock().unwrap() = frontmost::frontmost_app_name();
-    match recorder.start() {
+    match recorder.start(input_device.as_deref()) {
         Ok(()) => {
             // Resolve the formatting mode from the frontmost app so the pill can
             // show "Prompt Engineer" while listening. Same inputs as the hot
@@ -473,8 +476,7 @@ fn stop_and_process(app: &AppHandle) {
                 // (prompt fragment + example turns). On any formatter failure
                 // `format` returns the raw transcript — expansion still
                 // applies to that raw text below.
-                let mode =
-                    resolve_mode(pending_app_name.as_deref(), &cfg.app_mode_map, &cfg.style);
+                let mode = resolve_mode(pending_app_name.as_deref(), &cfg.app_mode_map, &cfg.style);
                 // Style dictations short enough for quick-clean skip the LLM
                 // entirely; prompt-engineer dictations always reach the model.
                 // Either way `format_ms` measures the whole formatting stage.
@@ -491,8 +493,7 @@ fn stop_and_process(app: &AppHandle) {
                 let format_ms = format_started.elapsed().as_millis() as i64;
                 // Deterministic replacements + snippet expansion run on the
                 // final text (LLM output or quick-clean output alike).
-                let final_text =
-                    postprocess::apply(&formatted, &cfg.replacements, &cfg.snippets);
+                let final_text = postprocess::apply(&formatted, &cfg.replacements, &cfg.snippets);
 
                 let inject_started = Instant::now();
                 let inject_result = inject_on_main_thread(&app, final_text.clone()).await;
@@ -544,7 +545,10 @@ fn stop_and_process(app: &AppHandle) {
                 let row = {
                     let conn = state.db.lock().unwrap();
                     match db::insert_history(&conn, &row) {
-                        Ok(id) => db::HistoryRow { id: Some(id), ..row },
+                        Ok(id) => db::HistoryRow {
+                            id: Some(id),
+                            ..row
+                        },
                         Err(err) => {
                             log::error!("failed to persist history: {err:#}");
                             row
@@ -604,6 +608,11 @@ fn set_settings(
     Ok(())
 }
 
+#[tauri::command]
+fn list_input_devices() -> Vec<String> {
+    audio::list_input_devices()
+}
+
 #[derive(Serialize)]
 struct ModelStatus {
     key: &'static str,
@@ -627,7 +636,9 @@ fn list_models() -> Vec<ModelStatus> {
 
 #[tauri::command]
 async fn download_model(app: AppHandle, key: String) -> Result<(), String> {
-    models::download(app, key).await.map_err(|e| format!("{e:#}"))
+    models::download(app, key)
+        .await
+        .map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -823,7 +834,9 @@ fn set_app_mode(
     // Validate before touching SQLite so the error message is clear; the DB
     // CHECK constraint is the backstop.
     if mode != "prompt_engineer" && mode != "style" {
-        return Err(format!("invalid mode '{mode}': expected prompt_engineer or style"));
+        return Err(format!(
+            "invalid mode '{mode}': expected prompt_engineer or style"
+        ));
     }
     {
         let conn = state.db.lock().unwrap();
@@ -889,6 +902,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_settings,
+            list_input_devices,
             list_models,
             download_model,
             get_history,
@@ -962,7 +976,9 @@ pub fn run() {
             // streams over the existing download events, so Settings
             // reflects it live; on failure the manual button in Settings
             // remains the recovery path.
-            let first_run = !models::REGISTRY.iter().any(|m| models::is_downloaded(m.key));
+            let first_run = !models::REGISTRY
+                .iter()
+                .any(|m| models::is_downloaded(m.key));
             if first_run {
                 let handle = handle.clone();
                 let key = handle
@@ -1063,8 +1079,14 @@ mod tests {
         assert!(cfg.dict_terms.contains(&"Tauri".to_string()));
         assert!(cfg.dict_terms.contains(&"rusqlite".to_string()));
         assert_eq!(cfg.dict_terms.len(), 2, "only term-kind rows bias STT");
-        assert_eq!(cfg.replacements, vec![("addr".to_string(), "address".to_string())]);
-        assert_eq!(cfg.snippets, vec![("sig".to_string(), "Best, Jose".to_string())]);
+        assert_eq!(
+            cfg.replacements,
+            vec![("addr".to_string(), "address".to_string())]
+        );
+        assert_eq!(
+            cfg.snippets,
+            vec![("sig".to_string(), "Best, Jose".to_string())]
+        );
         assert_eq!(cfg.style, ("work".to_string(), "formal".to_string()));
     }
 

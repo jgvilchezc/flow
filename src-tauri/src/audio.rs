@@ -142,6 +142,16 @@ fn pick_by_name<T>(mut devices: impl Iterator<Item = (String, T)>, wanted: &str)
     devices.find(|(name, _)| name == wanted).map(|(_, d)| d)
 }
 
+/// Peak below which a recording is treated as silence. macOS delivers exact
+/// zeros when the Microphone permission is denied or stale; a quiet room on a
+/// real microphone peaks orders of magnitude above this.
+pub const SILENCE_PEAK: f32 = 1e-4;
+
+/// True when the recording carries no usable signal (see [`SILENCE_PEAK`]).
+pub fn is_silent(samples: &[f32]) -> bool {
+    peak_amplitude(samples) < SILENCE_PEAK
+}
+
 /// Largest absolute sample value; 0.0 for an empty slice.
 fn peak_amplitude(samples: &[f32]) -> f32 {
     samples.iter().fold(0.0, |peak, s| peak.max(s.abs()))
@@ -203,6 +213,16 @@ mod tests {
     #[test]
     fn peak_amplitude_of_empty_slice_is_zero() {
         assert_eq!(peak_amplitude(&[]), 0.0);
+    }
+
+    #[test]
+    fn is_silent_for_all_zero_samples() {
+        assert!(is_silent(&[0.0; 16_000]));
+    }
+
+    #[test]
+    fn is_not_silent_for_quiet_room_noise() {
+        assert!(!is_silent(&[0.0, 0.002, -0.003, 0.001]));
     }
 
     #[test]

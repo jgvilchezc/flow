@@ -434,6 +434,23 @@ fn stop_and_process(app: &AppHandle) {
         hide_overlay(app); // accidental tap
         return;
     }
+    // Silence never reaches Whisper: it hallucinates words like "gracias" on
+    // empty audio, which reads as a bogus transcription instead of a mic issue.
+    if audio::is_silent(&samples) {
+        log::warn!("recording is silent; skipping transcription");
+        emit_state(
+            app,
+            "error",
+            "No audio captured. Check Microphone permission for Flow",
+        );
+        show_overlay(app);
+        let app = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            hide_overlay(&app);
+        });
+        return;
+    }
 
     *state.processing.lock().unwrap() = true;
     emit_state(app, "processing", "");

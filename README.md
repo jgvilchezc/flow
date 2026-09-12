@@ -51,6 +51,14 @@ pnpm tauri dev      # development
 pnpm tauri build    # release bundle (Flow.app)
 ```
 
+Release builds are signed with the identity in `bundle.macOS.signingIdentity`
+(`src-tauri/tauri.conf.json`). macOS ties the Accessibility grant to the app's
+code signature, so a stable identity keeps the permission across builds; an
+ad-hoc signed build would ask for Accessibility again after every install. If
+you build on another machine, replace it with your own certificate from
+`security find-identity -v -p codesigning`, or remove the key to fall back to
+ad-hoc signing.
+
 First run:
 
 1. The settings window opens — download a Whisper model (Large v3 Turbo recommended, 574 MB) or paste a Groq API key (free at console.groq.com) and switch the engine to Groq.

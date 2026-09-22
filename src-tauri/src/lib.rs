@@ -4,6 +4,7 @@ mod format;
 mod frontmost;
 mod http;
 mod inject;
+mod mic_mute;
 mod models;
 mod postprocess;
 mod prompt;

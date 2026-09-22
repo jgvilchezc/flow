@@ -45,13 +45,15 @@ impl Recorder {
         // CoreAudio level, which makes cpal deliver silence. Push-to-talk
         // means the user wants the mic live right now, so clear it. This is
         // best-effort: a failure here must never prevent the recording.
-        match mic_mute::ensure_unmuted(&device_name) {
-            Ok(true) => {
-                log::warn!("input device {device_name:?} was muted by the system; unmuted it")
-            }
-            Ok(false) => {}
-            Err(err) => {
-                log::warn!("could not clear the mute on input device {device_name:?}: {err}")
+        if device_name != "<unknown>" {
+            match mic_mute::ensure_unmuted(&device_name) {
+                Ok(true) => {
+                    log::warn!("input device {device_name:?} was muted by the system; unmuted it")
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    log::warn!("could not clear the mute on input device {device_name:?}: {err}")
+                }
             }
         }
 

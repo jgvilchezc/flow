@@ -114,6 +114,10 @@ mod imp {
         }
         let count = size as usize / std::mem::size_of::<AudioObjectID>();
         let mut ids = vec![0 as AudioObjectID; count];
+        // Hand CoreAudio the capacity the buffer really has, so the safety
+        // argument below holds even if the reported byte count were not a
+        // multiple of the element size.
+        let mut size = (count * std::mem::size_of::<AudioObjectID>()) as u32;
         // SAFETY: `ids` holds exactly `size` bytes (count * 4), so CoreAudio
         // cannot write past the end of the buffer; `size` is updated in place
         // with the number of bytes actually written.
@@ -206,15 +210,21 @@ mod imp {
     /// write or the mute did not clear on read-back.
     pub fn ensure_unmuted(name: &str) -> Result<bool, String> {
         let Some(device) = find_input_device_id(name) else {
+            log::debug!("mic_mute: no CoreAudio input device named {name:?}");
             return Ok(false);
         };
         let mute = address(kAudioDevicePropertyMute, kAudioObjectPropertyScopeInput);
         if !has_property(device, &mute) {
+            log::debug!("mic_mute: device {name:?} exposes no master input mute");
             return Ok(false);
         }
         match get_u32(device, &mute) {
             Ok(1) => {}
-            Ok(_) | Err(_) => return Ok(false),
+            Ok(_) => return Ok(false),
+            Err(status) => {
+                log::debug!("mic_mute: reading mute on {name:?} failed with OSStatus {status}");
+                return Ok(false);
+            }
         }
         set_u32(device, &mute, 0).map_err(|status| {
             format!("AudioObjectSetPropertyData(mute=0) failed with OSStatus {status}")

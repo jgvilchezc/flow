@@ -1,3 +1,4 @@
+use crate::mic_mute;
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
@@ -38,16 +39,30 @@ impl Recorder {
                 .default_input_device()
                 .ok_or_else(|| anyhow!("no input device available"))?,
         };
+        let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
+
+        // Something on macOS occasionally mutes the input device at the
+        // CoreAudio level, which makes cpal deliver silence. Push-to-talk
+        // means the user wants the mic live right now, so clear it. This is
+        // best-effort: a failure here must never prevent the recording.
+        if device_name != "<unknown>" {
+            match mic_mute::ensure_unmuted(&device_name) {
+                Ok(true) => {
+                    log::warn!("input device {device_name:?} was muted by the system; unmuted it")
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    log::warn!("could not clear the mute on input device {device_name:?}: {err}")
+                }
+            }
+        }
+
         let config = device
             .default_input_config()
             .context("failed to get default input config")?;
 
         self.source_rate = config.sample_rate().0;
-        log::info!(
-            "recording from {:?} at {} Hz",
-            device.name().unwrap_or_else(|_| "<unknown>".into()),
-            self.source_rate
-        );
+        log::info!("recording from {device_name:?} at {} Hz", self.source_rate);
         let channels = config.channels() as usize;
 
         let buffer = Arc::clone(&self.buffer);

@@ -1,6 +1,6 @@
 [package]
 name = "flow"
-version = "0.3.0"
+version = "0.3.1"
 description = "Free, local-first voice dictation for macOS (Wispr Flow style)"
 authors = ["Jose Gabriel Vilchez"]
 edition = "2021"
@@ -22,6 +22,8 @@ anyhow = "1"
 log = "0.4"
 env_logger = "0.11"
 cpal = "0.15"
+# CoreAudio bindings used to clear a system-applied input mute (see mic_mute.rs).
+coreaudio-sys = "0.2"
 whisper-rs = { version = "0.16", features = ["metal"] }
 enigo = "0.6"
 macos-accessibility-client = "0.0.1"

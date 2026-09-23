@@ -65,8 +65,11 @@ impl Recorder {
         log::info!("recording from {device_name:?} at {} Hz", self.source_rate);
         let channels = config.channels() as usize;
 
+        // A fresh buffer per recording: the capture callback of a previous
+        // stream must never be able to write into this one, even if that
+        // stream outlives its handle (see `stop`).
+        self.buffer = Arc::new(Mutex::new(Vec::new()));
         let buffer = Arc::clone(&self.buffer);
-        buffer.lock().unwrap().clear();
 
         let err_fn = |err| log::error!("audio stream error: {err}");
 
@@ -109,7 +112,16 @@ impl Recorder {
 
     /// Stops capturing and returns the recording as 16kHz mono f32.
     pub fn stop(&mut self) -> Vec<f32> {
-        self.stream = None; // dropping the stream stops capture
+        // Stop the audio unit explicitly. cpal 0.15 keeps a strong reference
+        // to the stream inside its own device-disconnect listener, so dropping
+        // the handle alone never stops capture: every recording would add one
+        // more live stream feeding the buffer, and the captured audio would be
+        // N interleaved copies of the microphone (N x the wall-clock length).
+        if let Some(stream) = self.stream.take() {
+            if let Err(err) = stream.pause() {
+                log::warn!("failed to stop audio stream: {err}");
+            }
+        }
         let samples = std::mem::take(&mut *self.buffer.lock().unwrap());
         log::info!(
             "captured {:.2}s at {} Hz, peak amplitude {:.4}",
@@ -228,6 +240,31 @@ mod tests {
     #[test]
     fn peak_amplitude_of_empty_slice_is_zero() {
         assert_eq!(peak_amplitude(&[]), 0.0);
+    }
+
+    /// Regression test for the cpal 0.15 stream leak: consecutive recordings
+    /// must each capture roughly wall-clock length. The leak only happens for
+    /// devices resolved by name (cpal adds a disconnect listener that keeps the
+    /// stream alive), so the test records from a named device. Needs real
+    /// hardware, so it is ignored by default.
+    #[test]
+    #[ignore]
+    fn consecutive_recordings_do_not_stack_samples() {
+        let name = list_input_devices()
+            .into_iter()
+            .find(|n| n.contains("MacBook"))
+            .expect("built-in microphone present");
+        let mut recorder = Recorder::new();
+        for _ in 0..3 {
+            recorder.start(Some(&name)).expect("input device available");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let samples = recorder.stop();
+            let seconds = samples.len() as f32 / WHISPER_SAMPLE_RATE as f32;
+            assert!(
+                (0.3..0.8).contains(&seconds),
+                "captured {seconds:.2}s for a 0.5s recording"
+            );
+        }
     }
 
     #[test]
